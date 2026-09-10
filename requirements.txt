@@ -1,0 +1,7 @@
+# PingGuard — Chapter 1: The Request Layer
+# Minimal dependency manifest for independently runnable API milestone
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
