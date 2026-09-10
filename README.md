@@ -1,67 +1,89 @@
-# PingGuard — Chapter 1: The Request Layer (FastAPI & Async Python)
+# PingGuard — Distributed Uptime Monitoring System
 
-PingGuard is an enterprise distributed uptime monitoring system. This repository contains the reference implementation of **Chapter 1: The Request Layer**, built according to the PingGuard Technical Architecture Blueprint.
+PingGuard is a high-performance, fault-tolerant distributed uptime monitoring system. It is designed to reliably monitor thousands of remote endpoints across the internet without letting slow or unresponsive targets block user-facing APIs.
 
-Chapter 1 provides a clean, asynchronous HTTP control plane for monitor registration and management without relying on external databases or network worker processes.
-
----
-
-## 1. Architectural Scope & Boundary
-
-### Responsibilities (Chapter 1)
-- Ingest client HTTP requests (`POST`, `GET`, `PATCH`, `PUT`).
-- Enforce strict perimeter validation via **Pydantic v2** (`HttpUrl`, interval limits, string lengths).
-- Reject malformed payloads automatically with HTTP 422 before touching business logic.
-- Manage monitor states (`PENDING`, `UP`, `DEGRADED`, `DOWN`).
-- Store monitor records in an in-memory repository designed for clean replacement by SQLAlchemy AsyncSession in Chapter 2.
-- Expose interactive OpenAPI documentation (`/docs`, `/openapi.json`).
-
-### Architectural Non-Goals (Preserved for Later Chapters)
-```
-CLIENT ──► FASTAPI ──► PYDANTIC VALIDATION ──► ASYNC ROUTE ──► IN-MEMORY STORE ──► JSON RESPONSE
-```
-> **CRITICAL BOUNDARY:** There is **NO direct network probing or pinging** (`requests.get`, `httpx` probes) inside these routes. Executing synchronous outbound network calls inside ASGI routes would block Python's asynchronous event loop and freeze concurrency for other clients. Probing is strictly offloaded to Celery background workers in Chapter 3.
+The system strictly decouples the **API Control Plane** (FastAPI) from the **Distributed Probing Data Plane** (Celery, Redis, and HTTPX) so that slow external network I/O never degrades API throughput.
 
 ---
 
-## 2. Technology Stack
+## 1. Project Roadmap & Implementation Status
 
-* **Language:** Python 3.12+
-* **Framework:** [FastAPI](https://fastapi.tiangolo.com/) (ASGI web framework & routing)
-* **Server:** [Uvicorn](https://www.uvicorn.org/) (High-performance ASGI server)
-* **Validation & Serialization:** [Pydantic v2](https://docs.pydantic.dev/latest/)
-* **Configuration:** Pydantic Settings
+PingGuard is developed in six sequential, independently verifiable chapters:
+
+| Chapter | Component & Technology | Status | Description |
+| :--- | :--- | :---: | :--- |
+| **Chapter 1** | **The Request Layer** *(FastAPI & Async Python)* | **Completed** | Non-blocking REST API, Pydantic v2 validation, in-memory repository, and 20 automated tests. |
+| **Chapter 2** | **The Persistence Layer** *(SQLAlchemy 2.0 & Alembic)* | **Up Next** | Relational persistence with PostgreSQL 16, asyncpg driver, and versioned schema migrations. |
+| **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | Planned | Worker pool, Redis task broker, idempotency locks, and late task acknowledgements. |
+| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | Planned | Periodic database sweep with `SELECT ... FOR UPDATE SKIP LOCKED` and batch chunking. |
+| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | Planned | Fine-grained timeout budgets (DNS/Connect/Read), SSRF defense, and alert flapping hysteresis. |
+| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | Planned | Multi-container environment with health-check dependency chains. |
 
 ---
 
-## 3. Project Structure
+## 2. What Is Currently Implemented (Chapter 1)
+
+Chapter 1 provides the core HTTP API foundation:
+* **Asynchronous Route Handlers:** All endpoints run as `async def` on ASGI / Uvicorn.
+* **Perimeter Validation (Pydantic v2):** Automatically enforces `HttpUrl` formats, string constraints, and check interval limits ($15\text{s} - 86400\text{s}$). Rejects malformed payloads with HTTP 422.
+* **Isolated Storage Abstraction:** An in-memory store injected via FastAPI `Depends()`, designed to be cleanly swapped with PostgreSQL `AsyncSession` in Chapter 2 without modifying route logic.
+* **Strict Architecture Boundary:** No outbound network pings inside API routes. Network latency is completely isolated from the request layer.
+* **Test Suite:** 20 comprehensive unit and integration tests passing in $<0.2\text{s}$.
+* **Interactive API Documentation:** Automatic Swagger UI (`/docs`), ReDoc (`/redoc`), and OpenAPI 3.1 JSON (`/openapi.json`).
+
+---
+
+## 3. What Is Coming Up Next (Chapter 2)
+
+The next milestone will implement **Chapter 2: The Persistence Layer**:
+* Integrate **PostgreSQL 16** using the **SQLAlchemy 2.0 Async** engine and `asyncpg`.
+* Set up **Alembic** to manage version-controlled, zero-downtime database migrations.
+* Define declarative ORM models (`MonitorModel`, `PingLogModel`) with composite indexing (`monitor_id`, `created_at`).
+* Replace the `InMemoryMonitorStore` dependency in `app/store.py` with an async session factory (`AsyncSession`).
+
+---
+
+## 4. Project Structure & File Details
 
 ```
 pingguard/
+│
 ├── app/
-│   ├── __init__.py      # Package declaration
-│   ├── main.py          # FastAPI application & async route handlers
-│   ├── schemas.py       # Pydantic v2 request/response contracts
-│   └── store.py         # In-memory persistence abstraction & DI provider
+│   ├── __init__.py          # Package declaration & version metadata
+│   ├── main.py              # FastAPI app configuration & async route handlers
+│   ├── schemas.py           # Pydantic v2 data models (MonitorCreate, MonitorRead, etc.)
+│   └── store.py             # In-memory store & FastAPI dependency injection provider
+│
+├── docs/
+│   ├── chapter_1_deliverables.md  # Detailed milestone deliverables & verification report
+│   ├── architecture_overview.md   # Macro architecture & isolation boundary specification
+│   └── PingGuard_Technical_Blueprint.pdf # Full 34-page engineering specification
+│
 ├── tests/
-│   ├── __init__.py
-│   └── test_api.py      # Comprehensive 20-test verification suite
-├── pyproject.toml       # Poetry dependency manifest
-├── requirements.txt     # Standard pip requirements
-├── run_tests.py         # Standalone test runner
-└── README.md            # Architecture & operational guide
+│   ├── __init__.py          # Test package marker
+│   └── test_api.py          # 20-case automated test suite (FastAPI TestClient)
+│
+├── .gitignore               # Ignored files (Python cache, virtualenvs, secrets)
+├── pyproject.toml           # Poetry project configuration & dependencies
+├── requirements.txt         # Standard pip dependencies
+├── run_tests.py             # Standalone test runner script
+└── README.md                # Project documentation & operational guide
 ```
 
 ---
 
-## 4. Installation & Setup
+## 5. Quickstart & Setup
 
-### Option A: Using virtual environment + pip
+### Prerequisites
+* **Python 3.12+**
+
+### 1. Installation
 ```bash
-# 1. Navigate to the project directory
-cd pingguard
+# Clone the repository
+git clone https://github.com/AmanYdv77/PingGaurd.git
+cd PingGaurd
 
-# 2. Create and activate a Python 3.12 virtual environment
+# Create and activate a virtual environment
 python -m venv venv
 
 # Windows:
@@ -69,204 +91,40 @@ python -m venv venv
 # Linux/macOS:
 source venv/bin/activate
 
-# 3. Install dependencies
+# Install required dependencies
 pip install -r requirements.txt
 ```
 
-### Option B: Using Poetry
-```bash
-cd pingguard
-poetry install
-poetry shell
-```
-
----
-
-## 5. Running the Application
-
-Start the development server with Uvicorn:
-
+### 2. Start the API Server
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Once started, the following services are available:
-* **API Base URL:** [http://localhost:8000](http://localhost:8000)
-* **Interactive Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
-* **ReDoc Documentation:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
-* **OpenAPI Schema JSON:** [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
-
----
-
-## 6. API Endpoints
-
-| Method | Path | Status Code | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/health` | `200 OK` | Service operational health check |
-| `POST` | `/monitors/` | `201 Created` | Register a new monitor endpoint |
-| `GET` | `/monitors/{id}` | `200 OK` | Retrieve single monitor details (or 404) |
-| `PATCH` | `/monitors/{id}` | `200 OK` | Partially update name or interval |
-| `PUT` | `/monitors/{id}` | `200 OK` | Update monitor configuration |
-| `GET` | `/monitors/` | `200 OK` | Paginated listing of monitors (`?skip=0&limit=100`) |
-
----
-
-## 7. Example Requests & Responses
-
-### 1. Create a Monitor (POST /monitors/)
-```bash
-curl -X POST http://localhost:8000/monitors/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Stripe API Health",
-    "url": "https://api.stripe.com/health",
-    "check_interval_seconds": 30
-  }'
-```
-
-**Response (`201 Created`):**
-```json
-{
-  "id": 1,
-  "name": "Stripe API Health",
-  "url": "https://api.stripe.com/health",
-  "check_interval_seconds": 30,
-  "status": "pending",
-  "last_checked_at": null,
-  "next_check_at": "2026-09-11T01:17:40.123456Z"
-}
-```
-
-### 2. Validation Error Example (POST /monitors/ with invalid interval)
-```bash
-curl -X POST http://localhost:8000/monitors/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Invalid Monitor",
-    "url": "https://example.com",
-    "check_interval_seconds": 5
-  }'
-```
-
-**Response (`422 Unprocessable Entity`):**
-```json
-{
-  "detail": [
-    {
-      "type": "greater_than_equal",
-      "loc": ["body", "check_interval_seconds"],
-      "msg": "Input should be greater than or equal to 15",
-      "input": 5,
-      "ctx": { "ge": 15 }
-    }
-  ]
-}
-```
-
-### 3. Retrieve Monitor by ID (GET /monitors/1)
-```bash
-curl http://localhost:8000/monitors/1
-```
-
-**Response (`200 OK`):**
-```json
-{
-  "id": 1,
-  "name": "Stripe API Health",
-  "url": "https://api.stripe.com/health",
-  "check_interval_seconds": 30,
-  "status": "pending",
-  "last_checked_at": null,
-  "next_check_at": "2026-09-11T01:17:40.123456Z"
-}
-```
-
-### 4. Non-Existent Monitor (GET /monitors/99999)
-```bash
-curl http://localhost:8000/monitors/99999
-```
-
-**Response (`404 Not Found`):**
-```json
-{
-  "detail": "Monitor not found"
-}
-```
-
-### 5. Update Monitor (PATCH /monitors/1)
-```bash
-curl -X PATCH http://localhost:8000/monitors/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Stripe Global Gateway",
-    "check_interval_seconds": 60
-  }'
-```
-
-**Response (`200 OK`):**
-```json
-{
-  "id": 1,
-  "name": "Stripe Global Gateway",
-  "url": "https://api.stripe.com/health",
-  "check_interval_seconds": 60,
-  "status": "pending",
-  "last_checked_at": null,
-  "next_check_at": "2026-09-11T01:17:40.123456Z"
-}
-```
-
----
-
-## 8. Automated Verification & Testing
-
-Execute the automated test suite covering all 8 milestone verification scenarios:
-
+### 3. Run Automated Tests
 ```bash
 python run_tests.py
 ```
 
-Output:
-```
-Ran 20 tests in 0.110s
-OK
-```
+---
 
-### Test Coverage Breakdown:
-1. **Valid Creation:** Default interval 60s, `pending` status, initial timestamps.
-2. **URL Validation:** Rejection of non-URL strings, missing schemes, unsupported protocols.
-3. **Interval Bounds:** Strict rejection of $<15\text{s}$ and $>86400\text{s}$.
-4. **Name Constraints:** Rejection of empty names and names $>120$ characters.
-5. **Lookup by ID:** HTTP 200 for existing records, HTTP 404 for missing records.
-6. **Updates:** Partial updates via PATCH and PUT, preserving unchanged attributes.
-7. **Pagination:** Offset/limit query controls preventing unbounded memory loading.
-8. **Documentation:** Structural integrity verification of `/openapi.json` and `/docs`.
+## 6. API Endpoints Summary
+
+| Method | Route | Status Code | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | `200 OK` | Service operational health check |
+| `POST` | `/monitors/` | `201 Created` | Register a new monitor endpoint (initial status `pending`) |
+| `GET` | `/monitors/{id}` | `200 OK` / `404` | Retrieve details for a single monitor by ID |
+| `PATCH` | `/monitors/{id}` | `200 OK` / `404` | Partially update monitor name or check interval |
+| `PUT` | `/monitors/{id}` | `200 OK` / `404` | Update monitor configuration |
+| `GET` | `/monitors/` | `200 OK` | List registered monitors (`?skip=0&limit=100`) |
 
 ---
 
-## 9. Chapter 1 → Chapter 2 Handoff
+## 7. Interactive Documentation
 
-When transitioning to **Chapter 2: The Persistence Layer (SQLAlchemy 2.0 & Alembic)**:
+Once the server is running, explore the live endpoints and test requests interactively:
+* **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
+* **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
+* **OpenAPI Specification:** [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
 
-1. **Dependency Injection Replacement:**
-   In Chapter 1, `app/store.py` provides `get_store()`.
-   In Chapter 2, replace this with an `AsyncSession` generator:
-   ```python
-   # Chapter 2 app/db.py
-   async def get_db() -> AsyncGenerator[AsyncSession, None]:
-       async with AsyncSessionFactory() as session:
-           yield session
-   ```
-2. **Schema Compatibility (`from_attributes=True`):**
-   `MonitorRead` in `app/schemas.py` is configured with `ConfigDict(from_attributes=True)`. In Chapter 2, route handlers can directly return SQLAlchemy ORM `MonitorModel` instances, and Pydantic will serialize them without any manual dictionary conversion:
-   ```python
-   # Chapter 2 route handler
-   @app.get("/monitors/{id}", response_model=MonitorRead)
-   async def get_monitor(id: int, db: AsyncSession = Depends(get_db)):
-       monitor = await db.get(MonitorModel, id)
-       if not monitor:
-           raise HTTPException(status_code=404, detail="Monitor not found")
-       return monitor  # Serialized automatically by MonitorRead!
-   ```
-3. **Database Migration:**
-   Alembic will generate declarative table definitions for `monitors` and `ping_logs` with composite indices (`(monitor_id, created_at)`).
+For detailed technical specifications, refer to [docs/chapter_1_deliverables.md](docs/chapter_1_deliverables.md) and [docs/architecture_overview.md](docs/architecture_overview.md).
