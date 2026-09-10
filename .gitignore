@@ -35,3 +35,7 @@ htmlcov/
 # Operating System
 .DS_Store
 Thumbs.db
+
+# Documentation (stored separately)
+docs/
+*.pdf
