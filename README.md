@@ -54,16 +54,11 @@ pingguard/
 │   ├── schemas.py           # Pydantic v2 data models (MonitorCreate, MonitorRead, etc.)
 │   └── store.py             # In-memory store & FastAPI dependency injection provider
 │
-├── docs/
-│   ├── chapter_1_deliverables.md  # Detailed milestone deliverables & verification report
-│   ├── architecture_overview.md   # Macro architecture & isolation boundary specification
-│   └── PingGuard_Technical_Blueprint.pdf # Full 34-page engineering specification
-│
 ├── tests/
 │   ├── __init__.py          # Test package marker
 │   └── test_api.py          # 20-case automated test suite (FastAPI TestClient)
 │
-├── .gitignore               # Ignored files (Python cache, virtualenvs, secrets)
+├── .gitignore               # Ignored files (Python cache, virtualenvs, secrets, docs)
 ├── pyproject.toml           # Poetry project configuration & dependencies
 ├── requirements.txt         # Standard pip dependencies
 ├── run_tests.py             # Standalone test runner script
@@ -126,5 +121,3 @@ Once the server is running, explore the live endpoints and test requests interac
 * **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
 * **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 * **OpenAPI Specification:** [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
-
-For detailed technical specifications, refer to [docs/chapter_1_deliverables.md](docs/chapter_1_deliverables.md) and [docs/architecture_overview.md](docs/architecture_overview.md).
