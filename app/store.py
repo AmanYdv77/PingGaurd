@@ -9,7 +9,14 @@ changes to the API contract.
 
 from datetime import datetime, timezone
 from typing import Any
-from app.schemas import MonitorCreate, MonitorStatus, MonitorUpdate
+from fastapi import HTTPException
+from app.schemas import (
+    MonitorCreate,
+    MonitorMode,
+    MonitorStatus,
+    MonitorUpdate,
+    validate_keep_alive_rules,
+)
 
 
 class InMemoryMonitorStore:
@@ -27,6 +34,7 @@ class InMemoryMonitorStore:
         """
         Creates and persists a new monitor record in memory.
         Initializes status to PENDING and sets next_check_at to now UTC.
+        Stores optional keep-alive configuration without executing network tasks.
         """
         monitor_id = self._next_id
         self._next_id += 1
@@ -40,6 +48,10 @@ class InMemoryMonitorStore:
             "status": MonitorStatus.PENDING,
             "last_checked_at": None,
             "next_check_at": now,
+            "mode": data.mode,
+            "keep_alive_enabled": data.keep_alive_enabled,
+            "keep_alive_interval_seconds": data.keep_alive_interval_seconds,
+            "keep_alive_path": data.keep_alive_path,
         }
         self._monitors[monitor_id] = record
         return dict(record)
@@ -51,19 +63,50 @@ class InMemoryMonitorStore:
 
     async def update(self, monitor_id: int, data: MonitorUpdate) -> dict[str, Any] | None:
         """
-        Updates an existing monitor's mutable fields (name, check_interval_seconds).
+        Updates an existing monitor's mutable fields.
+        Validates consistency across the merged state before persisting.
         Returns None if monitor does not exist.
         """
         record = self._monitors.get(monitor_id)
         if not record:
             return None
 
+        merged = dict(record)
         if data.name is not None:
-            record["name"] = data.name
+            merged["name"] = data.name
         if data.check_interval_seconds is not None:
-            record["check_interval_seconds"] = data.check_interval_seconds
+            merged["check_interval_seconds"] = data.check_interval_seconds
+        if data.mode is not None:
+            merged["mode"] = data.mode
+        if data.keep_alive_enabled is not None:
+            merged["keep_alive_enabled"] = data.keep_alive_enabled
+        if data.keep_alive_interval_seconds is not None:
+            merged["keep_alive_interval_seconds"] = data.keep_alive_interval_seconds
+        if data.keep_alive_path is not None:
+            merged["keep_alive_path"] = data.keep_alive_path
 
-        return dict(record)
+        # If keep-alive is explicitly disabled, reset interval and path unless explicitly specified
+        if data.keep_alive_enabled is False:
+            if data.keep_alive_interval_seconds is None:
+                merged["keep_alive_interval_seconds"] = None
+            if data.keep_alive_path is None:
+                merged["keep_alive_path"] = None
+            if data.mode is None and merged["mode"] != MonitorMode.MONITOR:
+                merged["mode"] = MonitorMode.MONITOR
+
+        # Verify merged state consistency
+        try:
+            validate_keep_alive_rules(
+                mode=merged["mode"],
+                keep_alive_enabled=merged["keep_alive_enabled"],
+                keep_alive_interval_seconds=merged["keep_alive_interval_seconds"],
+                keep_alive_path=merged["keep_alive_path"],
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=422, detail=str(err))
+
+        self._monitors[monitor_id] = merged
+        return dict(merged)
 
     async def list_monitors(self, skip: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         """
