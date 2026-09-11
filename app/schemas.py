@@ -2,12 +2,13 @@
 PingGuard Schemas — Chapter 1: The Request Layer
 
 Defines the core Pydantic v2 data contracts for incoming requests and outgoing responses.
-Adheres strictly to the PingGuard Technical Architecture Blueprint specification.
+Adheres strictly to the PingGuard Technical Architecture Blueprint specification,
+including the Optional Keep-Alive extension.
 """
 
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 
 class MonitorStatus(str, Enum):
@@ -23,6 +24,49 @@ class MonitorStatus(str, Enum):
     DEGRADED = "degraded"
     DOWN = "down"
     PENDING = "pending"
+
+
+class MonitorMode(str, Enum):
+    """
+    Operational mode of the registered monitor.
+    
+    - MONITOR: Standard uptime and health checking only.
+    - KEEP_ALIVE: Periodic lightweight activity intended to wake/keep an idle-prone service active.
+    - MONITOR_AND_KEEP_ALIVE: Combines health monitoring and periodic keep-alive activity.
+    
+    NOTE: Keep-alive is an optional capability and acts as an activity/wake-up attempt;
+    it is not a guarantee against provider-enforced idle termination.
+    """
+    MONITOR = "monitor"
+    KEEP_ALIVE = "keep_alive"
+    MONITOR_AND_KEEP_ALIVE = "monitor_and_keep_alive"
+
+
+def validate_keep_alive_rules(
+    mode: MonitorMode | None,
+    keep_alive_enabled: bool | None,
+    keep_alive_interval_seconds: int | None,
+    keep_alive_path: str | None,
+) -> None:
+    """
+    Central validation helper for consistency between mode, keep_alive_enabled,
+    keep_alive_interval_seconds, and keep_alive_path.
+    """
+    if mode == MonitorMode.MONITOR:
+        if keep_alive_enabled is True:
+            raise ValueError("keep_alive_enabled must be False when mode is 'monitor'")
+    elif mode in (MonitorMode.KEEP_ALIVE, MonitorMode.MONITOR_AND_KEEP_ALIVE):
+        if keep_alive_enabled is False:
+            raise ValueError(f"keep_alive_enabled must be True when mode is '{mode.value}'")
+
+    if keep_alive_enabled is True:
+        if keep_alive_interval_seconds is None:
+            raise ValueError("keep_alive_interval_seconds is required when keep_alive_enabled is True")
+    elif keep_alive_enabled is False:
+        if keep_alive_interval_seconds is not None:
+            raise ValueError("keep_alive_interval_seconds must be None when keep_alive_enabled is False")
+        if keep_alive_path is not None:
+            raise ValueError("keep_alive_path must be None when keep_alive_enabled is False")
 
 
 class MonitorCreate(BaseModel):
@@ -54,6 +98,49 @@ class MonitorCreate(BaseModel):
         description="Evaluation interval in seconds. Minimum 15s, maximum 86400s (24h).",
         examples=[30, 60, 300]
     )
+    mode: MonitorMode = Field(
+        default=MonitorMode.MONITOR,
+        description="Determines whether the monitor performs health monitoring, keep-alive activity, or both."
+    )
+    keep_alive_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enables periodic lightweight requests intended to provide activity to idle-prone services. "
+            "Behavior depends on the hosting provider and is NOT a guarantee of permanent uptime."
+        )
+    )
+    keep_alive_interval_seconds: int | None = Field(
+        default=None,
+        ge=15,
+        le=86400,
+        description="Interval between keep-alive attempts in seconds (minimum 15s, maximum 86400s)."
+    )
+    keep_alive_path: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Relative endpoint path used for keep-alive requests, for example /health."
+    )
+
+    @field_validator("keep_alive_path")
+    @classmethod
+    def validate_keep_alive_path(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("/"):
+            raise ValueError("keep_alive_path must begin with '/' and be a relative path")
+        if v.startswith("//") or "://" in v:
+            raise ValueError("keep_alive_path must be a relative path, not an absolute URL")
+        return v
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "MonitorCreate":
+        validate_keep_alive_rules(
+            self.mode,
+            self.keep_alive_enabled,
+            self.keep_alive_interval_seconds,
+            self.keep_alive_path
+        )
+        return self
 
 
 class MonitorRead(BaseModel):
@@ -93,6 +180,22 @@ class MonitorRead(BaseModel):
         default=None,
         description="UTC timestamp when the monitor is next eligible for scheduler sweep."
     )
+    mode: MonitorMode = Field(
+        default=MonitorMode.MONITOR,
+        description="Configured monitor mode (monitor, keep_alive, monitor_and_keep_alive)."
+    )
+    keep_alive_enabled: bool = Field(
+        default=False,
+        description="Indicates whether periodic keep-alive requests are configured."
+    )
+    keep_alive_interval_seconds: int | None = Field(
+        default=None,
+        description="Interval between keep-alive attempts in seconds."
+    )
+    keep_alive_path: str | None = Field(
+        default=None,
+        description="Relative endpoint path used for keep-alive requests."
+    )
 
 
 class MonitorUpdate(BaseModel):
@@ -114,3 +217,45 @@ class MonitorUpdate(BaseModel):
         le=86400,
         description="Updated check interval in seconds. Omit or pass null to leave unchanged."
     )
+    mode: MonitorMode | None = Field(
+        default=None,
+        description="Updated monitor mode. Omit or pass null to leave unchanged."
+    )
+    keep_alive_enabled: bool | None = Field(
+        default=None,
+        description="Updated keep-alive enable flag. Omit or pass null to leave unchanged."
+    )
+    keep_alive_interval_seconds: int | None = Field(
+        default=None,
+        ge=15,
+        le=86400,
+        description="Updated keep-alive interval in seconds. Omit or pass null to leave unchanged."
+    )
+    keep_alive_path: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Updated keep-alive relative endpoint path. Omit or pass null to leave unchanged."
+    )
+
+    @field_validator("keep_alive_path")
+    @classmethod
+    def validate_keep_alive_path(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("/"):
+            raise ValueError("keep_alive_path must begin with '/' and be a relative path")
+        if v.startswith("//") or "://" in v:
+            raise ValueError("keep_alive_path must be a relative path, not an absolute URL")
+        return v
+
+    @model_validator(mode="after")
+    def validate_update_consistency(self) -> "MonitorUpdate":
+        if self.keep_alive_enabled is True and self.keep_alive_interval_seconds is None:
+            raise ValueError("keep_alive_interval_seconds is required when keep_alive_enabled is True")
+        if self.keep_alive_enabled is False and self.keep_alive_interval_seconds is not None:
+            raise ValueError("keep_alive_interval_seconds must be None when keep_alive_enabled is False")
+        if self.mode == MonitorMode.MONITOR and self.keep_alive_enabled is True:
+            raise ValueError("keep_alive_enabled must be False when mode is 'monitor'")
+        if self.mode in (MonitorMode.KEEP_ALIVE, MonitorMode.MONITOR_AND_KEEP_ALIVE) and self.keep_alive_enabled is False:
+            raise ValueError(f"keep_alive_enabled must be True when mode is '{self.mode.value}'")
+        return self
