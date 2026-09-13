@@ -1,4 +1,4 @@
-# PingGuard — Chapter 2: The Persistence Layer
+# PingGuard — Chapter 3: Distributed Task Execution
 # Core Web Framework & Validation
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
@@ -11,6 +11,13 @@ asyncpg>=0.30.0
 psycopg2-binary>=2.9.10
 alembic>=1.14.0
 python-dotenv>=1.0.1
+
+# Distributed Task Queue & Message Broker (Celery & Redis)
+celery[redis]>=5.4.0
+redis>=5.0.0
+
+# Network Execution (Worker HTTP Client)
+requests>=2.32.0
 
 # Testing & Client
 httpx>=0.28.0
