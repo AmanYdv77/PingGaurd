@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pingguard"
-version = "0.2.0"
-description = "Distributed Uptime Monitoring System — Chapter 2: The Persistence Layer"
+version = "0.3.0"
+description = "Distributed Uptime Monitoring System — Chapter 3: Distributed Task Execution (Celery & Redis)"
 authors = ["PingGuard Engineering Team"]
 readme = "README.md"
 packages = [{include = "app"}]
@@ -17,6 +17,9 @@ asyncpg = "^0.30.0"
 psycopg2-binary = "^2.9.10"
 alembic = "^1.14.0"
 python-dotenv = "^1.0.1"
+celery = {extras = ["redis"], version = "^5.4.0"}
+redis = "^5.0.0"
+requests = "^2.32.0"
 httpx = "^0.28.0"
 
 [build-system]
