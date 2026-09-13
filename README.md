@@ -14,176 +14,157 @@ PingGuard is developed in six sequential, independently verifiable chapters:
 | :--- | :--- | :---: | :--- |
 | **Chapter 1** | **The Request Layer** *(FastAPI & Async Python)* | **Completed** | Non-blocking REST API, Pydantic v2 validation, and boundary guards. |
 | **Chapter 2** | **The Persistence Layer** *(SQLAlchemy 2.0 & Alembic)* | **Completed** | Relational persistence with PostgreSQL, asyncpg driver, typed Mapped[] ORM, and Alembic migrations. |
-| **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Up Next** | Worker pool, Redis task broker, idempotency locks, and late task acknowledgements. |
-| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | Planned | Periodic database sweep (`next_check_at`, `next_keep_alive_at`) with `FOR UPDATE SKIP LOCKED`. |
+| **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Completed** | Celery worker pool, Redis message broker, late acks, prefetch multiplier 1, and synchronous worker DB sessions. |
+| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Up Next** | Periodic database sweep (`next_check_at`, `next_keep_alive_at`) with `FOR UPDATE SKIP LOCKED`. |
 | **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | Planned | Fine-grained timeout budgets, SSRF defense, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
 | **Chapter 6** | **Container Orchestration** *(Docker Compose)* | Planned | Multi-container environment with health-check dependency chains. |
 
 ---
 
-## 2. Chapter 2 Architecture: The Persistence Layer
+## 2. Chapter 3 Architecture: Distributed Task Execution
 
-Chapter 2 establishes the durable relational foundation for PingGuard, replacing Chapter 1's in-memory store with an asynchronous PostgreSQL persistence layer:
+Chapter 3 implements the distributed background processing pipeline, decoupling network I/O from the FastAPI web service:
 
 ```
-Client
-  ↓
-FastAPI
-  ↓
-Pydantic v2 Validation
-  ↓
-AsyncSession (Dependency Injection via get_db)
-  ↓
-SQLAlchemy 2.0 Typed ORM
-  ↓
-PostgreSQL (monitors, ping_results, alembic_version)
+FastAPI / future Celery Beat
+       │
+       │ Enqueue task (.delay(monitor_id))
+       ▼
+  Redis Queue (Broker: redis://localhost:6379/0)
+       │
+       │ Worker consumes task (prefetch_multiplier=1, acks_late=True)
+       ▼
+  Celery Worker Process
+       │
+       ├──► execute_ping(monitor_id) -------> Target URL (Health Probe)
+       │                                            │
+       └──► execute_keep_alive(monitor_id) -> Target URL + path (Activity Ping)
+                                                    │
+                                                    ▼
+                                           PostgreSQL (pingguard)
+                                           - ping_results (check_type='monitor' | 'keep_alive')
+                                           - monitors (status & last_checked_at)
 ```
 
-### Core Relational Models
+### Key Differences: FastAPI vs. Celery Worker
 
-1. **`Monitor` (`monitors` table):**
-   Represents endpoint configuration, polling intervals, keep-alive parameters, and future scheduler state.
-   * `id`: Integer primary key (auto-incrementing)
-   * `name`: String(120), target label
-   * `url`: String(2048), target URL (intentionally non-unique to allow multiple test profiles per URL)
-   * `check_interval_seconds`: Integer (default 60s, range 15s–86400s)
-   * `status`: String(20) (`pending`, `up`, `degraded`, `down`, `unreachable`)
-   * `last_checked_at`: Timezone-aware UTC timestamp (nullable)
-   * `next_check_at`: Timezone-aware UTC timestamp (**indexed** for periodic scheduler polling)
-   * **Keep-Alive Configuration:**
-     * `mode`: String(30) (`monitor`, `keep_alive`, `monitor_and_keep_alive`)
-     * `keep_alive_enabled`: Boolean (default `false`)
-     * `keep_alive_interval_seconds`: Integer (nullable, range 15s–86400s)
-     * `keep_alive_path`: String(255) (nullable, relative URI path e.g. `/health`)
-     * `next_keep_alive_at`: Timezone-aware UTC timestamp (**indexed** for future keep-alive scheduler sweep)
-   * `results`: One-to-many relationship to `PingResult` with `cascade="all, delete-orphan"` and `passive_deletes=True`.
-
-2. **`PingResult` (`ping_results` table):**
-   Represents historical telemetry from individual probe executions.
-   * `id`: Integer primary key
-   * `monitor_id`: Integer foreign key (`monitors.id`, `ON DELETE CASCADE`, indexed)
-   * `check_type`: String(20) (`"monitor"` for health probes, `"keep_alive"` for wake-up activity pings)
-   * `status_code`: Integer HTTP status code (nullable)
-   * `latency_ms`: Float round-trip latency in milliseconds (nullable)
-   * `error`: String(500) error summary on probe failure (nullable)
-   * `checked_at`: Timezone-aware UTC timestamp (indexed)
-   * Composite Index: `("monitor_id", "checked_at")` for fast historical timeline queries.
+| Feature | FastAPI API Layer | Celery Worker Layer |
+| :--- | :--- | :--- |
+| **Role** | API Control Plane (HTTP CRUD, user requests) | Data Plane (Network probes, wake-up pings) |
+| **Database Access** | Asynchronous (`AsyncSessionLocal`, `get_db`) via `asyncpg` | Synchronous (`SyncSessionLocal`, `get_sync_db`) via `psycopg2` |
+| **Concurrency Model**| Single-process async event loop (ASGI) | Multi-process / threaded worker pool |
+| **Network Probing** | **Strictly Forbidden** (never blocks on external HTTP) | **Authorized** (bounded execution with timeouts) |
 
 ---
 
-## 3. Keep-Alive Design & Chapter 2 Scope Boundary
+## 3. Worker Tasks: Monitoring vs. Keep-Alive
 
-* **Configuration Only at this Milestone:**
-  Chapter 2 persists the user's desired Keep-Alive parameters (`mode`, `keep_alive_enabled`, `keep_alive_interval_seconds`, `keep_alive_path`, and `next_keep_alive_at`).
-* **Strict Boundary:**
-  **Chapter 2 executes ZERO outbound network requests.** Registering or retrieving a monitor with Keep-Alive enabled does not contact the remote server. Outbound probing is strictly isolated to background workers in Chapter 3/5.
-* **Realistic Expectations:**
-  Keep-Alive is an optional activity/wake-up ping designed to reduce idle sleeping on platforms that spin down. It is not an SLA guarantee of permanent uptime.
+PingGuard provides two dedicated background tasks with distinct operational semantics:
 
----
+### 1. `execute_ping(monitor_id: int)`
+* **Task Name:** `app.tasks.execute_ping`
+* **Purpose:** Evaluates whether the target service is online and healthy.
+* **Workflow:**
+  1. Loads current `Monitor` from PostgreSQL by `monitor_id`.
+  2. Issues HTTP GET request with a bounded timeout (`timeout=5.0s`).
+  3. Records latency in milliseconds.
+  4. Updates `Monitor.status` (`"up"` for 2xx/3xx, `"degraded"` for 4xx, `"down"` for 5xx/connection failure).
+  5. Updates `Monitor.last_checked_at`.
+  6. Persists historical record to `ping_results` with `check_type="monitor"`.
+  7. Retries transient failures (`Timeout`, `ConnectionError`) up to 3 times with exponential backoff.
 
-## 4. Database Setup & Migrations
-
-### 1. Environment Configuration
-PingGuard reads its database connection string from the `DATABASE_URL` environment variable or a local `.env` file:
-
-```bash
-# .env
-DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/pingguard
-```
-
-> **Note on Drivers:**
-> The FastAPI application runtime uses `asyncpg` for non-blocking asynchronous access.
-> Alembic migrations use synchronous `psycopg2` (configured automatically in `alembic/env.py`).
-
-### 2. Alembic Migration Commands
-
-Alembic manages schema evolution cleanly without running migrations automatically on app startup.
-
-```bash
-# Apply migrations to head
-alembic upgrade head
-
-# Check for schema drift between ORM models and database
-alembic check
-
-# Generate a new migration revision if models change
-alembic revision --autogenerate -m "describe schema change"
-
-# Roll back all migrations (test rebuild from scratch)
-alembic downgrade base
-```
+### 2. `execute_keep_alive(monitor_id: int)`
+* **Task Name:** `app.tasks.execute_keep_alive`
+* **Purpose:** Transmits lightweight activity requests to touch services prone to spinning down on idle.
+* **Gatekeeper:** If `keep_alive_enabled` is `False`, the task cleanly skips without sending any HTTP request.
+* **URL Construction:** Safely combines `monitor.url` and `monitor.keep_alive_path` (e.g. `https://xyz.com` + `/health` -> `https://xyz.com/health`).
+* **Telemetry:** Persists a `PingResult` record with `check_type="keep_alive"`.
+* **Important Semantic Boundary:**
+  * Keep-Alive is an activity attempt, **NOT a permanent uptime guarantee**.
+  * Keep-Alive results record transmission outcomes and status codes, but do **NOT** alter `Monitor.status` (uptime health classification is reserved strictly for `execute_ping`).
 
 ---
 
-## 5. Quickstart & Testing
+## 4. Reliability & Concurrency Configurations
 
-### Prerequisites
-* **Python 3.12+**
-* **PostgreSQL 14+**
+The Celery application in `app/worker.py` is configured with production-grade reliability parameters:
 
-### 1. Installation
-```bash
-# Clone the repository
-git clone https://github.com/AmanYdv77/PingGaurd.git
-cd PingGaurd
+* **`task_serializer = "json"`, `accept_content = ["json"]`:** Ensures safe JSON-only serialization and prevents arbitrary object exploitation.
+* **`task_acks_late = True`:** Tasks are acknowledged only after execution completes. If a worker crashes during execution, the task remains safely in the queue.
+* **`worker_prefetch_multiplier = 1`:** Workers reserve only 1 task at a time, eliminating head-of-line blocking caused by slow or unresponsive remote endpoints.
+* **`task_soft_time_limit = 10`, `task_time_limit = 15`:** Bounded execution prevents stuck worker processes.
 
-# Create and activate a virtual environment
-python -m venv .venv
+---
 
-# Windows:
-.\.venv\Scripts\Activate.ps1
-# Linux/macOS:
-source .venv/bin/activate
+## 5. Development Workflow & Starting the Services
 
-# Install required dependencies
-pip install -r requirements.txt
-```
+For local development, PingGuard uses a 4-terminal architecture:
 
-### 2. Apply Database Migrations
-```bash
+### Terminal 1: PostgreSQL
+Ensure PostgreSQL is running on port `5432` and apply migrations:
+```powershell
 alembic upgrade head
 ```
 
-### 3. Start the API Server
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+### Terminal 2: Redis
+Start the Redis message broker on port `6379`:
+```powershell
+redis-server
 ```
 
-### 4. Run Automated Test Suite
-```bash
-python run_tests.py
+### Terminal 3: FastAPI Web Server
+Start the API server:
+```powershell
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-*Executes all 27 automated tests covering API validation, keep-alive rules, PostgreSQL persistence, app restart durability, ORM relationships, and cascade deletes.*
+
+### Terminal 4: Celery Worker
+Start the Celery worker process.
+> **Windows Note:** Because billiard's prefork pool is not supported on Windows, start the worker using `-P solo` or `-P threads`:
+```powershell
+.\.venv\Scripts\celery.exe -A app.worker.celery_app worker -l info -P solo
+```
 
 ---
 
-## 6. API Endpoints Summary
+## 6. Manual Task Triggering & Verification
 
-| Method | Route | Status Code | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/health` | `200 OK` | Service operational health check & milestone info |
-| `POST` | `/monitors/` | `201 Created` | Register and persist a new monitor endpoint in PostgreSQL |
-| `GET` | `/monitors/{id}` | `200 OK` / `404` | Retrieve monitor configuration and scheduling state from PostgreSQL |
-| `PATCH` | `/monitors/{id}` | `200 OK` / `404` | Partially update monitor configuration or keep-alive parameters |
-| `PUT` | `/monitors/{id}` | `200 OK` / `404` | Update monitor configuration with consistency validation |
-| `GET` | `/monitors/` | `200 OK` | List registered monitors with offset/limit pagination (`?skip=0&limit=100`) |
+Tasks can be triggered asynchronously via Python:
+
+```python
+from app.tasks import execute_ping, execute_keep_alive
+
+# Enqueue health monitoring task
+async_ping = execute_ping.delay(1)
+print("Enqueued ping task ID:", async_ping.id)
+
+# Enqueue keep-alive task
+async_ka = execute_keep_alive.delay(1)
+print("Enqueued keep-alive task ID:", async_ka.id)
+```
+
+The call to `.delay()` returns immediately without blocking. The Celery worker picks up the task from Redis, executes the HTTP request, and writes the telemetry record into the `ping_results` table in PostgreSQL.
 
 ---
 
-## 7. Interactive Documentation
+## 7. Running the Automated Test Suite
 
-* **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
-* **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
-* **OpenAPI Specification:** [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
+PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, and background task execution:
+
+```powershell
+.\.venv\Scripts\python.exe run_tests.py
+```
+*Executes all 37 automated tests across `test_api.py` and `test_tasks.py`.*
 
 ---
 
-## 8. Chapter 3 Handoff
+## 8. Chapter 4 Handoff: The Scheduling Heartbeat
 
-Chapter 2 completes the **Persistence Layer**.
-The next milestone will implement **Chapter 3: Distributed Task Execution (Celery & Redis)**:
-* Connect Celery workers to the PostgreSQL database to read due `Monitor` rows.
-* Configure Redis as the distributed task message broker.
-* Establish worker pools, task idempotency locks, and late task acknowledgements.
-* In Chapter 4, the scheduler (Celery Beat) will use the indexed `next_check_at` and `next_keep_alive_at` timestamps to dispatch monitoring and keep-alive tasks asynchronously.
+Chapter 3 provides executable, safe background tasks. It does **not** contain scheduling logic or database sweeps.
+
+In **Chapter 4: The Scheduling Heartbeat (Celery Beat)**:
+1. Celery Beat will run periodic sweeps against PostgreSQL:
+   * Query monitors where `next_check_at <= now()`.
+   * Query monitors where `keep_alive_enabled=True` and `next_keep_alive_at <= now()`.
+2. Beat will use `SELECT ... FOR UPDATE SKIP LOCKED` to lock rows and advance timestamps atomically.
+3. For each due monitor, Beat will call `execute_ping.delay(monitor_id)` or `execute_keep_alive.delay(monitor_id)`, handing off execution to the Chapter 3 worker plane.
