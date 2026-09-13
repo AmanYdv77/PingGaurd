@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pingguard"
-version = "0.1.0"
-description = "Distributed Uptime Monitoring System — Chapter 1: The Request Layer"
+version = "0.2.0"
+description = "Distributed Uptime Monitoring System — Chapter 2: The Persistence Layer"
 authors = ["PingGuard Engineering Team"]
 readme = "README.md"
 packages = [{include = "app"}]
@@ -12,6 +12,12 @@ fastapi = "^0.115"
 uvicorn = {extras = ["standard"], version = "^0.32"}
 pydantic = "^2.9"
 pydantic-settings = "^2.5"
+sqlalchemy = "^2.0.36"
+asyncpg = "^0.30.0"
+psycopg2-binary = "^2.9.10"
+alembic = "^1.14.0"
+python-dotenv = "^1.0.1"
+httpx = "^0.28.0"
 
 [build-system]
 requires = ["poetry-core"]

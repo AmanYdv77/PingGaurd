@@ -1,0 +1,101 @@
+"""
+SQLAlchemy 2.0 Typed ORM Models — Chapter 2: The Persistence Layer
+
+Defines the relational schema for PingGuard:
+- Monitor: Configuration, health state, and scheduling timestamps for URL targets.
+- PingResult: Historical execution logs for monitoring and keep-alive activities.
+"""
+
+from datetime import datetime, timezone
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from app.schemas import MonitorMode, MonitorStatus
+
+
+class Base(DeclarativeBase):
+    """Base declarative class for all PingGuard ORM models."""
+    pass
+
+
+class Monitor(Base):
+    """
+    Durable configuration and state for an endpoint monitor.
+    
+    Stores user-configured polling schedules, optional keep-alive parameters,
+    and future scheduler tick timestamps (next_check_at, next_keep_alive_at).
+    """
+    __tablename__ = "monitors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)  # Intentionally not unique (same URL may have multiple configs)
+    check_interval_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default=MonitorStatus.PENDING.value, nullable=False)
+    
+    # Timezone-aware scheduling timestamps (UTC)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Optional Keep-Alive configuration
+    mode: Mapped[str] = mapped_column(String(30), default=MonitorMode.MONITOR.value, nullable=False)
+    keep_alive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    keep_alive_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    keep_alive_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    next_keep_alive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Relationship to telemetry logs with cascade deletion
+    results: Mapped[list["PingResult"]] = relationship(
+        "PingResult",
+        back_populates="monitor",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class PingResult(Base):
+    """
+    Historical execution record for a single probe or keep-alive check.
+    
+    Distinguishes normal health probes from keep-alive activity attempts
+    via the `check_type` column.
+    """
+    __tablename__ = "ping_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    monitor_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("monitors.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    check_type: Mapped[str] = mapped_column(
+        String(20),
+        default="monitor",
+        nullable=False,
+        comment="'monitor' for health checks, 'keep_alive' for wake-up pings",
+    )
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+
+    # Back-reference to parent monitor
+    monitor: Mapped[Monitor] = relationship("Monitor", back_populates="results")
+
+    __table_args__ = (
+        Index("idx_ping_results_monitor_checked", "monitor_id", "checked_at"),
+    )

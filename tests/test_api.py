@@ -22,19 +22,65 @@ Covers:
 """
 
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
+import psycopg2
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+from app.db import DATABASE_URL, get_db
 from app.main import app
+from app.models import Monitor, PingResult
 from app.schemas import MonitorMode, MonitorStatus
-from app.store import _global_store
+
+# Use NullPool for tests so each request in TestClient gets a connection on its current event loop
+test_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+TestSessionLocal = async_sessionmaker(
+    bind=test_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+)
 
 
-class TestPingGuardChapter1(unittest.TestCase):
+async def override_get_db():
+    async with TestSessionLocal() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+def _get_pg_conn_str(url: str) -> str:
+    """Strip SQLAlchemy driver prefixes for native psycopg2 connection."""
+    for prefix in ("+asyncpg", "+psycopg2"):
+        url = url.replace(prefix, "")
+    return url
+
+
+class TestPingGuardChapter2(unittest.TestCase):
     def setUp(self) -> None:
-        """Reset the in-memory store before every test run."""
-        _global_store.clear()
+        """Reset PostgreSQL tables and dependency overrides before every test run."""
+        app.dependency_overrides[get_db] = override_get_db
+
+        sync_url = _get_pg_conn_str(DATABASE_URL)
+        conn = psycopg2.connect(sync_url)
+        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE ping_results, monitors RESTART IDENTITY CASCADE;")
+        conn.commit()
+        cur.close()
+        conn.close()
+
         self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
 
     def test_health_check(self) -> None:
         """Verify the basic service health check endpoint."""
@@ -488,6 +534,198 @@ class TestPingGuardChapter1(unittest.TestCase):
         response = self.client.get("/docs")
         self.assertEqual(response.status_code, 200)
         self.assertIn("swagger-ui", response.text.lower())
+
+    # =========================================================================
+    # CHAPTER 2 SPECIFIC TESTS: Persistence, Restart, Relationships, Cascade
+    # =========================================================================
+    def test_keep_alive_fields_persisted_in_postgresql(self) -> None:
+        """
+        Chapter 2 - Req 36: Verify Monitor with Keep-Alive configuration is persisted
+        durably in PostgreSQL with exact column values and next_keep_alive_at timestamp.
+        """
+        payload = {
+            "name": "XYZ Website",
+            "url": "https://xyz.com",
+            "check_interval_seconds": 60,
+            "mode": "monitor_and_keep_alive",
+            "keep_alive_enabled": True,
+            "keep_alive_interval_seconds": 600,
+            "keep_alive_path": "/health"
+        }
+        create_resp = self.client.post("/monitors/", json=payload)
+        self.assertEqual(create_resp.status_code, 201)
+        created_id = create_resp.json()["id"]
+
+        # Verify directly in PostgreSQL via synchronous connection
+        sync_url = _get_pg_conn_str(DATABASE_URL)
+        conn = psycopg2.connect(sync_url)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, url, check_interval_seconds, mode, keep_alive_enabled, "
+            "keep_alive_interval_seconds, keep_alive_path, next_keep_alive_at "
+            "FROM monitors WHERE id = %s;",
+            (created_id,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "XYZ Website")
+        self.assertEqual(row[1], "https://xyz.com/")
+        self.assertEqual(row[2], 60)
+        self.assertEqual(row[3], "monitor_and_keep_alive")
+        self.assertTrue(row[4])
+        self.assertEqual(row[5], 600)
+        self.assertEqual(row[6], "/health")
+        self.assertIsNotNone(row[7])  # next_keep_alive_at is set for future scheduler
+
+    def test_persistence_across_app_restart(self) -> None:
+        """
+        Chapter 2 - Req 35 & 37: Verify monitor and Keep-Alive data survive
+        a complete FastAPI application teardown and restart.
+        """
+        import sys
+
+        # 1. Create monitor with Keep-Alive in session 1
+        payload = {
+            "name": "Durable Monitor",
+            "url": "https://durable.example.com",
+            "check_interval_seconds": 90,
+            "mode": "monitor_and_keep_alive",
+            "keep_alive_enabled": True,
+            "keep_alive_interval_seconds": 450,
+            "keep_alive_path": "/alive"
+        }
+        res1 = self.client.post("/monitors/", json=payload)
+        self.assertEqual(res1.status_code, 201)
+        mid = res1.json()["id"]
+
+        # 2. Simulate FastAPI shutdown and restart
+        del self.client
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("app.main"):
+                del sys.modules[mod]
+
+        from app.main import app as restarted_app
+        restarted_app.dependency_overrides[get_db] = override_get_db
+        restarted_client = TestClient(restarted_app)
+
+        # 3. Retrieve from new application instance
+        res2 = restarted_client.get(f"/monitors/{mid}")
+        self.assertEqual(res2.status_code, 200)
+        data = res2.json()
+
+        self.assertEqual(data["id"], mid)
+        self.assertEqual(data["name"], "Durable Monitor")
+        self.assertEqual(data["url"], "https://durable.example.com/")
+        self.assertEqual(data["check_interval_seconds"], 90)
+        self.assertEqual(data["mode"], "monitor_and_keep_alive")
+        self.assertTrue(data["keep_alive_enabled"])
+        self.assertEqual(data["keep_alive_interval_seconds"], 450)
+        self.assertEqual(data["keep_alive_path"], "/alive")
+
+    def test_ping_result_orm_relationship_both_check_types(self) -> None:
+        """
+        Chapter 2 - Req 38: Verify PingResult ORM model and relationship to Monitor.
+        Confirms both 'monitor' and 'keep_alive' check types can belong to the same Monitor.
+        """
+        import asyncio
+
+        async def _test():
+            async with TestSessionLocal() as session:
+                # Create Monitor
+                monitor = Monitor(
+                    name="Relationship Test Monitor",
+                    url="https://rel.example.com",
+                    check_interval_seconds=60,
+                    mode="monitor_and_keep_alive",
+                    keep_alive_enabled=True,
+                    keep_alive_interval_seconds=300,
+                )
+                session.add(monitor)
+                await session.commit()
+                await session.refresh(monitor)
+                mid = monitor.id
+
+                # Create two PingResults: one 'monitor', one 'keep_alive'
+                now = datetime.now(timezone.utc)
+                pr_monitor = PingResult(
+                    monitor_id=mid,
+                    check_type="monitor",
+                    status_code=200,
+                    latency_ms=120.0,
+                    error=None,
+                    checked_at=now,
+                )
+                pr_keep_alive = PingResult(
+                    monitor_id=mid,
+                    check_type="keep_alive",
+                    status_code=200,
+                    latency_ms=85.5,
+                    error=None,
+                    checked_at=now,
+                )
+                session.add_all([pr_monitor, pr_keep_alive])
+                await session.commit()
+
+                # Verify relationship
+                stmt = select(PingResult).where(PingResult.monitor_id == mid).order_by(PingResult.id.asc())
+                res = await session.execute(stmt)
+                results = res.scalars().all()
+                self.assertEqual(len(results), 2)
+                self.assertEqual(results[0].check_type, "monitor")
+                self.assertEqual(results[0].latency_ms, 120.0)
+                self.assertEqual(results[1].check_type, "keep_alive")
+                self.assertEqual(results[1].latency_ms, 85.5)
+
+        asyncio.run(_test())
+
+    def test_cascade_delete_monitor_and_ping_results(self) -> None:
+        """
+        Chapter 2 - Req 39: Verify cascade delete.
+        Deleting a Monitor must cascade delete all associated PingResult rows.
+        """
+        import asyncio
+
+        async def _test():
+            async with TestSessionLocal() as session:
+                # Create Monitor
+                monitor = Monitor(
+                    name="Cascade Target",
+                    url="https://cascade.example.com",
+                    check_interval_seconds=60,
+                )
+                session.add(monitor)
+                await session.commit()
+                await session.refresh(monitor)
+                mid = monitor.id
+
+                # Add PingResult
+                pr = PingResult(
+                    monitor_id=mid,
+                    check_type="monitor",
+                    status_code=200,
+                    latency_ms=99.0,
+                    checked_at=datetime.now(timezone.utc),
+                )
+                session.add(pr)
+                await session.commit()
+
+                # Confirm PingResult exists
+                stmt = select(PingResult).where(PingResult.monitor_id == mid)
+                res = await session.execute(stmt)
+                self.assertEqual(len(res.scalars().all()), 1)
+
+                # Delete monitor
+                await session.delete(monitor)
+                await session.commit()
+
+                # Confirm PingResults were cascade deleted
+                res_after = await session.execute(stmt)
+                self.assertEqual(len(res_after.scalars().all()), 0)
+
+        asyncio.run(_test())
 
 
 if __name__ == "__main__":

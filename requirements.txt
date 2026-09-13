@@ -1,7 +1,16 @@
-# PingGuard — Chapter 1: The Request Layer
-# Minimal dependency manifest for independently runnable API milestone
-
+# PingGuard — Chapter 2: The Persistence Layer
+# Core Web Framework & Validation
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
+
+# Database & Migrations (SQLAlchemy 2.0 + PostgreSQL + Alembic)
+sqlalchemy>=2.0.36
+asyncpg>=0.30.0
+psycopg2-binary>=2.9.10
+alembic>=1.14.0
+python-dotenv>=1.0.1
+
+# Testing & Client
+httpx>=0.28.0
