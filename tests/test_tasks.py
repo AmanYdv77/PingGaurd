@@ -1,5 +1,5 @@
 """
-Automated Test Suite for Chapter 3 — Celery & Redis (Distributed Task Execution)
+Automated Test Suite for Chapter 3 Tasks with Chapter 5 Network Layer Integration
 
 Validates:
 1. Safe URL joining helper for Keep-Alive destinations.
@@ -8,8 +8,8 @@ Validates:
 4. `execute_keep_alive` successful execution and telemetry recording.
 5. `execute_keep_alive` gatekeeper: skips cleanly when keep_alive_enabled=False.
 6. `execute_keep_alive` does not alter primary monitor uptime status.
-7. Transient error handling and timeout classification.
-8. Non-retry of standard HTTP 4xx/5xx responses.
+7. Transient error handling and timeout classification via PingResultDTO.
+8. Status code mappings (2xx/3xx -> UP, 4xx -> DEGRADED, 5xx -> DOWN).
 9. Task idempotency across repeat executions.
 10. Celery `.delay()` asynchronous invocation flow.
 """
@@ -18,11 +18,10 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 import psycopg2
-import requests
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout
 
 from app.db import DATABASE_URL, get_sync_db
 from app.models import Monitor, PingResult
+from app.net import PingOutcome, PingResultDTO
 from app.schemas import MonitorMode, MonitorStatus
 from app.tasks import execute_keep_alive, execute_ping, safe_join_url
 from app.worker import celery_app
@@ -66,6 +65,7 @@ class TestChapter3Tasks(unittest.TestCase):
                 keep_alive_interval_seconds=300 if keep_alive_enabled else None,
                 keep_alive_path=keep_alive_path,
                 next_check_at=datetime.now(timezone.utc),
+                next_keep_alive_at=datetime.now(timezone.utc) if keep_alive_enabled else None,
             )
             session.add(monitor)
             session.flush()
@@ -87,15 +87,20 @@ class TestChapter3Tasks(unittest.TestCase):
     # =========================================================================
     # execute_ping Tests
     # =========================================================================
-    @patch("requests.get")
-    def test_execute_ping_success(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_ping")
+    def test_execute_ping_success(self, mock_ping: MagicMock) -> None:
         """
-        Verify execute_ping performs HTTP probe, records PingResult with check_type='monitor',
+        Verify execute_ping performs probe via robust_ping, records PingResult with check_type='monitor',
         updates monitor status to 'up', and records last_checked_at.
         """
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_get.return_value = mock_resp
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=25.5,
+            error_detail=None,
+            original_url="https://healthy-target.com",
+            final_url="https://healthy-target.com",
+        )
 
         mid = self._create_test_monitor(url="https://healthy-target.com")
 
@@ -120,21 +125,33 @@ class TestChapter3Tasks(unittest.TestCase):
             self.assertEqual(pr.status_code, 200)
             self.assertIsNone(pr.error)
 
-    @patch("requests.get")
-    def test_execute_ping_status_mappings(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_ping")
+    def test_execute_ping_status_mappings(self, mock_ping: MagicMock) -> None:
         """Verify HTTP 404 maps to DEGRADED and HTTP 500 maps to DOWN."""
         mid = self._create_test_monitor(url="https://status-target.com")
 
         # 404 -> DEGRADED
-        mock_resp_404 = MagicMock(status_code=404)
-        mock_get.return_value = mock_resp_404
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.DEGRADED,
+            status_code=404,
+            latency_ms=18.0,
+            error_detail=None,
+            original_url="https://status-target.com",
+            final_url="https://status-target.com",
+        )
         execute_ping(mid)
         with get_sync_db() as session:
             self.assertEqual(session.get(Monitor, mid).status, MonitorStatus.DEGRADED.value)
 
         # 500 -> DOWN
-        mock_resp_500 = MagicMock(status_code=500)
-        mock_get.return_value = mock_resp_500
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.DOWN,
+            status_code=500,
+            latency_ms=22.0,
+            error_detail=None,
+            original_url="https://status-target.com",
+            final_url="https://status-target.com",
+        )
         execute_ping(mid)
         with get_sync_db() as session:
             self.assertEqual(session.get(Monitor, mid).status, MonitorStatus.DOWN.value)
@@ -148,15 +165,20 @@ class TestChapter3Tasks(unittest.TestCase):
     # =========================================================================
     # execute_keep_alive Tests
     # =========================================================================
-    @patch("requests.get")
-    def test_execute_keep_alive_success(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_keep_alive")
+    def test_execute_keep_alive_success(self, mock_ka: MagicMock) -> None:
         """
         Verify execute_keep_alive contacts `url + keep_alive_path`, writes PingResult(check_type='keep_alive'),
         and leaves Monitor.status untouched.
         """
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_get.return_value = mock_resp
+        mock_ka.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=14.2,
+            error_detail=None,
+            original_url="https://service-target.org/healthcheck",
+            final_url="https://service-target.org/healthcheck",
+        )
 
         mid = self._create_test_monitor(
             url="https://service-target.org",
@@ -170,10 +192,7 @@ class TestChapter3Tasks(unittest.TestCase):
         self.assertEqual(result["check_type"], "keep_alive")
         self.assertEqual(result["status_code"], 200)
 
-        # Verify requests.get was called with the joined path
-        mock_get.assert_called_once()
-        called_url = mock_get.call_args[0][0]
-        self.assertEqual(called_url, "https://service-target.org/healthcheck")
+        mock_ka.assert_called_once_with("https://service-target.org", "/healthcheck")
 
         # Verify PingResult recorded with check_type='keep_alive'
         with get_sync_db() as session:
@@ -184,8 +203,8 @@ class TestChapter3Tasks(unittest.TestCase):
             self.assertIsNotNone(pr)
             self.assertEqual(pr.status_code, 200)
 
-    @patch("requests.get")
-    def test_execute_keep_alive_skipped_when_disabled(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_keep_alive")
+    def test_execute_keep_alive_skipped_when_disabled(self, mock_ka: MagicMock) -> None:
         """
         Critical Rule: If keep_alive_enabled=False, execute_keep_alive MUST NOT make any HTTP
         request and MUST NOT persist a success PingResult.
@@ -200,10 +219,8 @@ class TestChapter3Tasks(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "keep_alive_disabled")
 
-        # Verify zero HTTP requests were made
-        mock_get.assert_not_called()
+        mock_ka.assert_not_called()
 
-        # Verify no PingResult was created
         with get_sync_db() as session:
             pr_count = session.query(PingResult).filter_by(monitor_id=mid).count()
             self.assertEqual(pr_count, 0)
@@ -217,9 +234,18 @@ class TestChapter3Tasks(unittest.TestCase):
     # =========================================================================
     # Failure & Transient Error Handling
     # =========================================================================
-    @patch("requests.get", side_effect=Timeout("Connection timed out after 5000ms"))
-    def test_execute_ping_timeout_permanent_failure(self, mock_get: MagicMock) -> None:
-        """Verify exhausted retries persist error='timeout' and set Monitor.status='down'."""
+    @patch("app.tasks.robust_ping")
+    def test_execute_ping_timeout_permanent_failure(self, mock_ping: MagicMock) -> None:
+        """Verify exhausted retries persist error='read_timeout' and set Monitor.status='down'."""
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.UNREACHABLE,
+            status_code=None,
+            latency_ms=5000.0,
+            error_detail="read_timeout",
+            original_url="https://timeout-target.com",
+            final_url=None,
+        )
+
         mid = self._create_test_monitor(url="https://timeout-target.com")
 
         # Set task.request.retries = 3 via Celery push_request
@@ -244,13 +270,29 @@ class TestChapter3Tasks(unittest.TestCase):
     # =========================================================================
     # Idempotency & Repeat Execution Test
     # =========================================================================
-    @patch("requests.get")
-    def test_task_idempotency_multiple_executions(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_keep_alive")
+    @patch("app.tasks.robust_ping")
+    def test_task_idempotency_multiple_executions(self, mock_ping: MagicMock, mock_ka: MagicMock) -> None:
         """
         Verify that running tasks repeatedly does not corrupt monitor state,
         properly records successive telemetry in PingResult, and updates last_checked_at.
         """
-        mock_get.return_value = MagicMock(status_code=200)
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=15.0,
+            error_detail=None,
+            original_url="https://idempotent-target.com",
+            final_url="https://idempotent-target.com",
+        )
+        mock_ka.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=12.0,
+            error_detail=None,
+            original_url="https://idempotent-target.com/ping",
+            final_url="https://idempotent-target.com/ping",
+        )
 
         mid = self._create_test_monitor(
             url="https://idempotent-target.com",
@@ -266,11 +308,9 @@ class TestChapter3Tasks(unittest.TestCase):
         execute_keep_alive(mid)
 
         with get_sync_db() as session:
-            # Monitor record remains unique and valid
             mon = session.get(Monitor, mid)
             self.assertEqual(mon.status, MonitorStatus.UP.value)
 
-            # Exactly 4 distinct telemetry rows exist
             results = session.query(PingResult).filter_by(monitor_id=mid).all()
             self.assertEqual(len(results), 4)
             monitor_results = [r for r in results if r.check_type == "monitor"]
@@ -281,13 +321,29 @@ class TestChapter3Tasks(unittest.TestCase):
     # =========================================================================
     # Celery .delay() Asynchronous Invocation Test
     # =========================================================================
-    @patch("requests.get")
-    def test_celery_delay_eager_execution(self, mock_get: MagicMock) -> None:
+    @patch("app.tasks.robust_keep_alive")
+    @patch("app.tasks.robust_ping")
+    def test_celery_delay_eager_execution(self, mock_ping: MagicMock, mock_ka: MagicMock) -> None:
         """
         Verify tasks can be queued via Celery's .delay() method.
         Uses Celery eager mode to test queueing mechanics within the test process.
         """
-        mock_get.return_value = MagicMock(status_code=200)
+        mock_ping.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=20.0,
+            error_detail=None,
+            original_url="https://celery-eager.com",
+            final_url="https://celery-eager.com",
+        )
+        mock_ka.return_value = PingResultDTO(
+            outcome=PingOutcome.UP,
+            status_code=200,
+            latency_ms=18.0,
+            error_detail=None,
+            original_url="https://celery-eager.com/health",
+            final_url="https://celery-eager.com/health",
+        )
 
         mid = self._create_test_monitor(
             url="https://celery-eager.com",
@@ -296,7 +352,6 @@ class TestChapter3Tasks(unittest.TestCase):
             keep_alive_path="/health",
         )
 
-        # Temporarily enable task_always_eager for in-process queue simulation
         celery_app.conf.task_always_eager = True
         try:
             async_ping = execute_ping.delay(mid)

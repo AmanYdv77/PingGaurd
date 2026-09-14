@@ -121,6 +121,28 @@ class MonitorCreate(BaseModel):
         description="Relative endpoint path used for keep-alive requests, for example /health."
     )
 
+    @field_validator("url")
+    @classmethod
+    def validate_url_scheme_and_safety(cls, v: HttpUrl) -> HttpUrl:
+        scheme = v.scheme.lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(f"URL scheme '{scheme}' is forbidden. Only 'http' and 'https' are allowed.")
+        if v.username or v.password:
+            raise ValueError("Credential-bearing URLs (user:password@) are forbidden for security reasons.")
+        host = (v.host or "").strip().lower()
+        if host in ("localhost", "localhost.localdomain"):
+            raise ValueError(f"SSRF security violation: '{host}' is a forbidden loopback destination.")
+        try:
+            import ipaddress
+            from app.net import is_ip_blocked
+            ip_obj = ipaddress.ip_address(host)
+            if is_ip_blocked(ip_obj):
+                raise ValueError(f"SSRF security violation: IP literal '{host}' is private or restricted.")
+        except ValueError as err:
+            if "SSRF security violation" in str(err):
+                raise
+        return v
+
     @field_validator("keep_alive_path")
     @classmethod
     def validate_keep_alive_path(cls, v: str | None) -> str | None:
