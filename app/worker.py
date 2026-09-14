@@ -59,6 +59,17 @@ celery_app.conf.update(
     
     # Explicit task tracking
     task_track_started=True,
+
+    # Chapter 4: Celery Beat Periodic Scheduling Heartbeat
+    # Exactly ONE static periodic sweep entry querying PostgreSQL for due work.
+    # No dynamic per-monitor entries are defined here to prevent config churn.
+    beat_schedule={
+        "sweep-due-monitors": {
+            "task": "app.tasks.sweep_due_monitors",
+            "schedule": float(os.getenv("SWEEP_INTERVAL_SECONDS", "15.0")),
+        }
+    },
+    beat_schedule_filename=os.getenv("CELERYBEAT_SCHEDULE_FILENAME", "celerybeat-schedule"),
 )
 
 # Eagerly import task definitions to ensure immediate registration
