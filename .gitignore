@@ -42,3 +42,10 @@ docs/
 
 # Celery Beat runtime schedule database
 celerybeat-schedule*
+
+# Redis dump files
+*.rdb
+
+# Scratch and verification scripts
+scratch/
+
