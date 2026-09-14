@@ -16,8 +16,8 @@ PingGuard is developed in six sequential, independently verifiable chapters:
 | **Chapter 2** | **The Persistence Layer** *(SQLAlchemy 2.0 & Alembic)* | **Completed** | Relational persistence with PostgreSQL, asyncpg driver, typed Mapped[] ORM, and Alembic migrations. |
 | **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Completed** | Celery worker pool, Redis message broker, late acks, prefetch multiplier 1, and synchronous worker DB sessions. |
 | **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Completed** | Database-driven periodic sweep (`next_check_at`, `next_keep_alive_at`), concurrency-safe `FOR UPDATE SKIP LOCKED`, and anti-storm recovery. |
-| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | **Up Next** | Fine-grained timeout budgets, SSRF defense, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
-| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | Planned | Multi-container environment with health-check dependency chains. |
+| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | **Completed** | Fine-grained timeout budgets, SSRF defense, redirect interception, streaming memory limits, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
+| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | **Up Next** | Multi-container environment with health-check dependency chains. |
 
 ---
 
@@ -148,24 +148,44 @@ Chapter 4 introduces automated, database-driven scheduling that decides **WHEN**
 
 ---
 
-## 7. Running the Automated Test Suite
+## 7. Chapter 5: Network Resilience & SSRF Defense (`app/net.py`)
 
-PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, Celery tasks, and Celery Beat scheduling:
+Chapter 5 equips the Celery worker probing fleet with a hardened, bounded, observable network execution engine powered by `httpx.AsyncClient`:
+
+* **Granular Phased Timeouts:** Separates request execution into connect (2.0s), read (5.0s), write (5.0s), and pool acquisition (2.0s), eliminating worker starvation.
+* **Multi-Layer SSRF Defense:** Rejects loopback (`127.0.0.0/8`, `::1`), private RFC1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local IPs, and cloud instance metadata (`169.254.169.254`).
+* **DNS Resolution & Rebinding Mitigation:** Resolves all hostnames via `socket.getaddrinfo` before socket establishment, verifying every candidate IP against the blocklist.
+* **HTTP Redirect Interception:** Utilizes `httpx` response event hooks to validate target `Location` headers on HTTP 3xx responses. Redirects to private or cloud metadata IPs are intercepted and aborted before connection.
+* **Memory-Bounded Streaming:** Streams response bodies with a hard 1MB (`1,048,576` bytes) ceiling using `client.stream("GET", url)`. Responses exceeding the limit abort gracefully to protect workers from OOM crashes.
+* **Monotonic Latency Tracking:** Latency is calculated using `time.monotonic()`, immune to NTP adjustments and system clock jumps.
+* **Structured Outcome Classification:** Normalizes status codes and errors into `PingOutcome` (`UP`, `DEGRADED`, `DOWN`, `UNREACHABLE`).
+* **Credential Redaction:** Sanitizes basic authentication credentials (`user:pass@`) in logs and database entries.
+* **Strict Keep-Alive Independence:** Keep-Alive activity pings record telemetry to `ping_results` (`check_type="keep_alive"`), but **NEVER alter `Monitor.status`**.
+
+---
+
+## 8. Running the Automated Test Suite
+
+PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, and HTTPX network resilience:
 
 ```powershell
 .\.venv\Scripts\python.exe run_tests.py
 ```
-*Executes all 47 automated tests across `test_api.py`, `test_tasks.py`, and `test_scheduler.py`.*
+*Executes all 59 automated tests across `test_api.py`, `test_tasks.py`, `test_scheduler.py`, and `test_net.py`.*
 
 ---
 
-## 8. Chapter 5 Handoff: Network Resilience & SSRF Defense
+## 9. Chapter 6 Handoff: Container Orchestration & Production Deployment
 
-* **Chapter 4 determines:** **WHEN** to execute checks.
-* **Chapter 3 determines:** **WHAT** tasks to execute (`execute_ping` vs `execute_keep_alive`).
-* **Chapter 5 will determine:** **HOW** network requests are executed safely and how outcomes are classified.
+With Chapters 1 through 5 fully operational:
+* **Chapter 1:** Validates and ingests monitoring configurations.
+* **Chapter 2:** Durably persists models and historical telemetry in PostgreSQL.
+* **Chapter 3:** Distributes task execution across Celery workers via Redis.
+* **Chapter 4:** Periodically evaluates schedules and claims due checks concurrency-safely.
+* **Chapter 5:** Safely executes network probes with SSRF defense, timeouts, and bounded streaming.
 
-In **Chapter 5: Network Resilience (HTTPX Prober)**:
-1. Replace synchronous requests with an HTTP client featuring granular timeout budgets (connect, read, write, pool).
-2. Implement **SSRF Protection**: blocking loopback (`127.0.0.1`), private RFC1918 subnets, link-local metadata IP (`169.254.169.254`), and DNS rebinding attacks.
-3. Classify probe outcomes into structured states: `UP`, `DEGRADED`, `DOWN`, `UNREACHABLE`, and `TLS_FAILURE`.
+In **Chapter 6: Container Orchestration (Docker Compose)**:
+1. Package the entire ecosystem (FastAPI, PostgreSQL, Redis, Celery Worker, Celery Beat) into container images.
+2. Define `docker-compose.yml` with health-check dependency chains (`depends_on: condition: service_healthy`).
+3. Configure isolated internal networking ensuring only the API reverse proxy is exposed publicly.
+

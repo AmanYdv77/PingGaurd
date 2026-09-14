@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pingguard"
-version = "0.4.0"
-description = "Distributed Uptime Monitoring System — Chapter 4: Celery Beat (The Scheduling Heartbeat)"
+version = "0.5.0"
+description = "Distributed Uptime Monitoring System — Chapter 5: httpx & Network Resilience"
 authors = ["PingGuard Engineering Team"]
 readme = "README.md"
 packages = [{include = "app"}]
