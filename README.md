@@ -15,8 +15,8 @@ PingGuard is developed in six sequential, independently verifiable chapters:
 | **Chapter 1** | **The Request Layer** *(FastAPI & Async Python)* | **Completed** | Non-blocking REST API, Pydantic v2 validation, and boundary guards. |
 | **Chapter 2** | **The Persistence Layer** *(SQLAlchemy 2.0 & Alembic)* | **Completed** | Relational persistence with PostgreSQL, asyncpg driver, typed Mapped[] ORM, and Alembic migrations. |
 | **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Completed** | Celery worker pool, Redis message broker, late acks, prefetch multiplier 1, and synchronous worker DB sessions. |
-| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Up Next** | Periodic database sweep (`next_check_at`, `next_keep_alive_at`) with `FOR UPDATE SKIP LOCKED`. |
-| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | Planned | Fine-grained timeout budgets, SSRF defense, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
+| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Completed** | Database-driven periodic sweep (`next_check_at`, `next_keep_alive_at`), concurrency-safe `FOR UPDATE SKIP LOCKED`, and anti-storm recovery. |
+| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | **Up Next** | Fine-grained timeout budgets, SSRF defense, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
 | **Chapter 6** | **Container Orchestration** *(Docker Compose)* | Planned | Multi-container environment with health-check dependency chains. |
 
 ---
@@ -119,52 +119,53 @@ Start the API server:
 ```
 
 ### Terminal 4: Celery Worker
-Start the Celery worker process.
+Start the Celery worker process:
 > **Windows Note:** Because billiard's prefork pool is not supported on Windows, start the worker using `-P solo` or `-P threads`:
 ```powershell
 .\.venv\Scripts\celery.exe -A app.worker.celery_app worker -l info -P solo
 ```
 
----
-
-## 6. Manual Task Triggering & Verification
-
-Tasks can be triggered asynchronously via Python:
-
-```python
-from app.tasks import execute_ping, execute_keep_alive
-
-# Enqueue health monitoring task
-async_ping = execute_ping.delay(1)
-print("Enqueued ping task ID:", async_ping.id)
-
-# Enqueue keep-alive task
-async_ka = execute_keep_alive.delay(1)
-print("Enqueued keep-alive task ID:", async_ka.id)
+### Terminal 5: Celery Beat (The Scheduling Heartbeat)
+Start the Celery Beat periodic scheduler process:
+> **Singleton Note:** Celery Beat MUST run as exactly one instance (`replicas = 1`).
+```powershell
+.\.venv\Scripts\celery.exe -A app.worker.celery_app beat -l info
 ```
 
-The call to `.delay()` returns immediately without blocking. The Celery worker picks up the task from Redis, executes the HTTP request, and writes the telemetry record into the `ping_results` table in PostgreSQL.
+---
+
+## 6. Chapter 4: Celery Beat Scheduling Architecture
+
+Chapter 4 introduces automated, database-driven scheduling that decides **WHEN** checks are performed without performing any network I/O in the scheduler:
+
+* **Single Static Sweep:** A single entry `"sweep-due-monitors"` in `celery_app.conf.beat_schedule` fires periodically (default `15.0s`, configurable via `SWEEP_INTERVAL_SECONDS`).
+* **Dual Independent Schedules:**
+  * **Monitoring Schedule:** Queries `next_check_at <= now` for monitors in mode `monitor` or `monitor_and_keep_alive`.
+  * **Keep-Alive Schedule:** Queries `next_keep_alive_at <= now` for monitors with `keep_alive_enabled=True` in mode `keep_alive` or `monitor_and_keep_alive`.
+* **Concurrency-Safe Row Claiming:** Uses `SELECT ... FOR UPDATE SKIP LOCKED` (`with_for_update(skip_locked=True)`), ensuring overlapping sweep runs skip already-locked rows without duplicate task dispatch.
+* **Timestamp Advancement:** Timestamps advance forward based on each monitor's configured interval from the reference sweep time (`now + check_interval_seconds`).
+* **Anti-Storm Recovery:** Missed schedules after Beat restarts trigger exactly ONE check per overdue monitor, advancing from the current time rather than replaying missed historical intervals.
 
 ---
 
 ## 7. Running the Automated Test Suite
 
-PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, and background task execution:
+PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, Celery tasks, and Celery Beat scheduling:
 
 ```powershell
 .\.venv\Scripts\python.exe run_tests.py
 ```
-*Executes all 37 automated tests across `test_api.py` and `test_tasks.py`.*
+*Executes all 47 automated tests across `test_api.py`, `test_tasks.py`, and `test_scheduler.py`.*
 
 ---
 
-## 8. Chapter 4 Handoff: The Scheduling Heartbeat
+## 8. Chapter 5 Handoff: Network Resilience & SSRF Defense
 
-Chapter 3 provides executable, safe background tasks. It does **not** contain scheduling logic or database sweeps.
+* **Chapter 4 determines:** **WHEN** to execute checks.
+* **Chapter 3 determines:** **WHAT** tasks to execute (`execute_ping` vs `execute_keep_alive`).
+* **Chapter 5 will determine:** **HOW** network requests are executed safely and how outcomes are classified.
 
-In **Chapter 4: The Scheduling Heartbeat (Celery Beat)**:
-1. Celery Beat will run periodic sweeps against PostgreSQL:
-   * Query monitors where `next_check_at <= now()`.
-   * Query monitors where `keep_alive_enabled=True` and `next_keep_alive_at <= now()`.
-2. Beat will use `SELECT ... FOR UPDATE SKIP LOCKED` to lock rows and advance timestamps atomically.
-3. For each due monitor, Beat will call `execute_ping.delay(monitor_id)` or `execute_keep_alive.delay(monitor_id)`, handing off execution to the Chapter 3 worker plane.
+In **Chapter 5: Network Resilience (HTTPX Prober)**:
+1. Replace synchronous requests with an HTTP client featuring granular timeout budgets (connect, read, write, pool).
+2. Implement **SSRF Protection**: blocking loopback (`127.0.0.1`), private RFC1918 subnets, link-local metadata IP (`169.254.169.254`), and DNS rebinding attacks.
+3. Classify probe outcomes into structured states: `UP`, `DEGRADED`, `DOWN`, `UNREACHABLE`, and `TLS_FAILURE`.

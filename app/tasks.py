@@ -19,7 +19,7 @@ Architectural Boundaries:
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import requests
 from requests.exceptions import ConnectionError as ReqConnectionError
@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_sync_db
 from app.models import Monitor, PingResult
-from app.schemas import MonitorStatus
+from app.schemas import MonitorMode, MonitorStatus
 from app.worker import celery_app
 
 logger = logging.getLogger(__name__)
@@ -296,3 +296,117 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
             "latency_ms": latency_ms,
             "error": error_msg,
         }
+
+
+# =========================================================================
+# Chapter 4: Celery Beat Periodic Scheduling Heartbeat
+# =========================================================================
+
+@celery_app.task(
+    bind=True,
+    name="app.tasks.sweep_due_monitors",
+    ignore_result=True,
+)
+def sweep_due_monitors(self) -> dict[str, int]:
+    """
+    Chapter 4 — Celery Beat Scheduling Heartbeat.
+    
+    Decides WHEN health probes and keep-alive activities are due and enqueues them.
+    Adheres strictly to the PingGuard architectural separation:
+    - Beat/Sweep decides WHEN to check.
+    - Celery Workers decide HOW to check.
+    - Zero outbound HTTP requests are performed within this task.
+    - Concurrency-safe claiming via SELECT ... FOR UPDATE SKIP LOCKED.
+    - Missed schedules advance from `now` to prevent catch-up storms.
+    - Two independent schedules: monitoring (`next_check_at`) and keep-alive (`next_keep_alive_at`).
+    """
+    now = datetime.now(timezone.utc)
+    logger.info("Scheduler sweep started at %s", now.isoformat())
+
+    monitors_enqueued = 0
+    keep_alives_enqueued = 0
+
+    with get_sync_db() as session:
+        # ---------------------------------------------------------------------
+        # Phase 1: Health Monitoring Due Sweep
+        # ---------------------------------------------------------------------
+        monitoring_modes = [MonitorMode.MONITOR.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
+        due_monitors = (
+            session.query(Monitor)
+            .filter(
+                Monitor.mode.in_(monitoring_modes),
+                Monitor.next_check_at <= now,
+            )
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+
+        for monitor in due_monitors:
+            logger.info("Monitor %s due for health check (next_check_at=%s)", monitor.id, monitor.next_check_at)
+            try:
+                execute_ping.delay(monitor.id)
+                monitors_enqueued += 1
+                monitor.next_check_at = now + timedelta(seconds=monitor.check_interval_seconds)
+                logger.info(
+                    "Enqueued execute_ping monitor_id=%s, advanced next_check_at to %s",
+                    monitor.id,
+                    monitor.next_check_at,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to enqueue execute_ping monitor_id=%s: %s. Rolling back transaction.",
+                    monitor.id,
+                    exc,
+                )
+                raise
+
+        # ---------------------------------------------------------------------
+        # Phase 2: Keep-Alive Activity Due Sweep
+        # ---------------------------------------------------------------------
+        keep_alive_modes = [MonitorMode.KEEP_ALIVE.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
+        due_keep_alives = (
+            session.query(Monitor)
+            .filter(
+                Monitor.keep_alive_enabled == True,
+                Monitor.mode.in_(keep_alive_modes),
+                Monitor.next_keep_alive_at <= now,
+            )
+            .with_for_update(skip_locked=True)
+            .all()
+        )
+
+        for monitor in due_keep_alives:
+            if not monitor.keep_alive_enabled or not monitor.keep_alive_interval_seconds:
+                logger.warning(
+                    "Keep-alive skipped monitor_id=%s reason=invalid_or_disabled_configuration",
+                    monitor.id,
+                )
+                continue
+
+            logger.info("Monitor %s due for keep_alive (next_keep_alive_at=%s)", monitor.id, monitor.next_keep_alive_at)
+            try:
+                execute_keep_alive.delay(monitor.id)
+                keep_alives_enqueued += 1
+                monitor.next_keep_alive_at = now + timedelta(seconds=monitor.keep_alive_interval_seconds)
+                logger.info(
+                    "Enqueued execute_keep_alive monitor_id=%s, advanced next_keep_alive_at to %s",
+                    monitor.id,
+                    monitor.next_keep_alive_at,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to enqueue execute_keep_alive monitor_id=%s: %s. Rolling back transaction.",
+                    monitor.id,
+                    exc,
+                )
+                raise
+
+    logger.info(
+        "Scheduler sweep completed. Enqueued %d health pings, %d keep-alive requests.",
+        monitors_enqueued,
+        keep_alives_enqueued,
+    )
+    return {
+        "monitors_enqueued": monitors_enqueued,
+        "keep_alives_enqueued": keep_alives_enqueued,
+    }
