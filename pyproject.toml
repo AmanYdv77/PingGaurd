@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pingguard"
-version = "0.5.0"
-description = "Distributed Uptime Monitoring System — Chapter 5: httpx & Network Resilience"
+version = "0.6.0"
+description = "Distributed Uptime Monitoring System — Chapter 6: Docker & Docker Compose Orchestration"
 authors = ["PingGuard Engineering Team"]
 readme = "README.md"
 packages = [{include = "app"}]

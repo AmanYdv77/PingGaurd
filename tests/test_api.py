@@ -727,6 +727,50 @@ class TestPingGuardChapter2(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_health_endpoint(self):
+        """Verify GET /health returns 200 OK with status ok or healthy."""
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn(data.get("status"), ["ok", "healthy"])
+        self.assertEqual(data.get("service"), "PingGuard API")
+        self.assertEqual(data.get("version"), "0.6.0")
+
+    def test_delete_monitor_api(self):
+        """Verify DELETE /monitors/{id} deletes the monitor and returns 204."""
+        create_resp = self.client.post("/monitors/", json={
+            "name": "Delete Me Test",
+            "url": "https://example.com/delete-test",
+            "check_interval_seconds": 60,
+        })
+        self.assertEqual(create_resp.status_code, 201)
+        mid = create_resp.json()["id"]
+
+        del_resp = self.client.delete(f"/monitors/{mid}")
+        self.assertEqual(del_resp.status_code, 204)
+
+        get_resp = self.client.get(f"/monitors/{mid}")
+        self.assertEqual(get_resp.status_code, 404)
+
+    def test_get_monitor_results_api(self):
+        """Verify GET /monitors/{id}/results returns historical telemetry."""
+        create_resp = self.client.post("/monitors/", json={
+            "name": "Results Test",
+            "url": "https://example.com/results-test",
+            "check_interval_seconds": 60,
+        })
+        self.assertEqual(create_resp.status_code, 201)
+        mid = create_resp.json()["id"]
+
+        # Directly query empty results
+        res_resp = self.client.get(f"/monitors/{mid}/results")
+        self.assertEqual(res_resp.status_code, 200)
+        self.assertEqual(res_resp.json(), [])
+
+        # Non-existent monitor 404
+        bad_resp = self.client.get("/monitors/999999/results")
+        self.assertEqual(bad_resp.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
