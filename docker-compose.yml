@@ -1,0 +1,214 @@
+# ==============================================================================
+# PingGuard — Chapter 6: Multi-Container Orchestration Architecture
+#
+# Coordinates 5 isolated services:
+#   1. db        (Authoritative PostgreSQL persistence + pgdata volume)
+#   2. redis     (Celery task broker & transient result backend)
+#   3. web       (FastAPI REST Control Plane — port 8000 exposed to host)
+#   4. worker    (Distributed Celery worker fleet — horizontally scalable)
+#   5. scheduler (Celery Beat periodic scheduler — STRICT SINGLETON: replicas=1)
+#
+# Network Security Boundary:
+#   Only port 8000 on the web service is published to the host.
+#   PostgreSQL (5432) and Redis (6379) communicate strictly over internal DNS.
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Authoritative Relational Database (PostgreSQL 15)
+  # ----------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: pingguard_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-pingguard}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-pingguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - pingguard_net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # 2. Celery Message Broker & Result Store (Redis 7)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: pingguard_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+    networks:
+      - pingguard_net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # 3. FastAPI Web API (Control Plane Gateway)
+  # ----------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pingguard-app:latest
+    container_name: pingguard_web
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - REDIS_BROKER_URL=redis://redis:6379/0
+      - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
+      - SWEEP_INTERVAL_SECONDS=${SWEEP_INTERVAL_SECONDS:-15.0}
+      - HTTP_CONNECT_TIMEOUT=${HTTP_CONNECT_TIMEOUT:-2.0}
+      - HTTP_READ_TIMEOUT=${HTTP_READ_TIMEOUT:-5.0}
+      - HTTP_WRITE_TIMEOUT=${HTTP_WRITE_TIMEOUT:-5.0}
+      - HTTP_POOL_TIMEOUT=${HTTP_POOL_TIMEOUT:-2.0}
+      - HTTP_MAX_RESPONSE_BYTES=${HTTP_MAX_RESPONSE_BYTES:-1048576}
+      - HTTP_MAX_REDIRECTS=${HTTP_MAX_REDIRECTS:-5}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - pingguard_net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # 4. Celery Worker (Network Probing & Keep-Alive Fleet)
+  # ----------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pingguard-app:latest
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - REDIS_BROKER_URL=redis://redis:6379/0
+      - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
+      - HTTP_CONNECT_TIMEOUT=${HTTP_CONNECT_TIMEOUT:-2.0}
+      - HTTP_READ_TIMEOUT=${HTTP_READ_TIMEOUT:-5.0}
+      - HTTP_WRITE_TIMEOUT=${HTTP_WRITE_TIMEOUT:-5.0}
+      - HTTP_POOL_TIMEOUT=${HTTP_POOL_TIMEOUT:-2.0}
+      - HTTP_MAX_RESPONSE_BYTES=${HTTP_MAX_RESPONSE_BYTES:-1048576}
+      - HTTP_MAX_REDIRECTS=${HTTP_MAX_REDIRECTS:-5}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pingguard_net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # 5. Celery Beat (Periodic Scheduling Heartbeat)
+  # CRITICAL ARCHITECTURAL CONSTRAINT:
+  # Must remain a SINGLETON (replicas: 1). NEVER scale scheduler horizontally.
+  # Multiple Beat instances will cause duplicate schedule sweeps and duplicate tasks.
+  # ----------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pingguard-app:latest
+    container_name: pingguard_scheduler
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - REDIS_BROKER_URL=redis://redis:6379/0
+      - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
+      - SWEEP_INTERVAL_SECONDS=${SWEEP_INTERVAL_SECONDS:-15.0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pingguard_net
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # Auxiliary / One-Shot Service: Database Migration Runner
+  # Execute on demand via:
+  #   docker compose run --rm migrate
+  # Or:
+  #   docker compose run --rm web alembic upgrade head
+  # ----------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pingguard-app:latest
+    profiles: ["tools"]
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - pingguard_net
+
+# ------------------------------------------------------------------------------
+# Persistent Volume Declarations
+# ------------------------------------------------------------------------------
+volumes:
+  pgdata:
+    name: pingguard_pgdata
+  redis_data:
+    name: pingguard_redis_data
+
+# ------------------------------------------------------------------------------
+# Network Topology
+# ------------------------------------------------------------------------------
+networks:
+  pingguard_net:
+    name: pingguard_internal_net
+    driver: bridge

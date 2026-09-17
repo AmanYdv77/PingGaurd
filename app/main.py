@@ -17,17 +17,22 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models import Monitor
+from app.models import Monitor, PingResult
+from app.net import robust_ping
 from app.schemas import (
     MonitorCreate,
     MonitorMode,
     MonitorRead,
     MonitorStatus,
     MonitorUpdate,
+    PingResultRead,
+    ProbeTestRequest,
+    ProbeTestResponse,
     validate_keep_alive_rules,
 )
 
@@ -48,19 +53,27 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get(
     "/health",
     tags=["System"],
     summary="Health check",
-    description="Returns the operational status of the PingGuard Chapter 2 API service."
+    description="Returns the operational status of the PingGuard API service."
 )
 async def health_check() -> dict[str, str]:
-    """Basic service health check endpoint."""
+    """Basic service health check endpoint for container orchestrators and uptime probes."""
     return {
         "status": "healthy",
         "service": "PingGuard API",
-        "milestone": "Chapter 2 — The Persistence Layer (SQLAlchemy 2.0 Async + PostgreSQL)",
+        "version": "0.6.0",
     }
 
 
@@ -230,3 +243,125 @@ async def list_monitors(
     stmt = select(Monitor).order_by(Monitor.id.asc()).offset(skip).limit(limit)
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+@app.delete(
+    "/monitors/{monitor_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Monitors"],
+    summary="Delete monitor",
+    description="Deletes an existing monitor and all associated probe results (CASCADE).",
+)
+async def delete_monitor(
+    monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """
+    Asynchronously deletes a monitor and all cascading results from PostgreSQL.
+    """
+    monitor = await db.get(Monitor, monitor_id)
+    if monitor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Monitor not found",
+        )
+    await db.delete(monitor)
+    await db.commit()
+    return None
+
+
+@app.get(
+    "/monitors/{monitor_id}/results",
+    response_model=list[PingResultRead],
+    tags=["Monitors"],
+    summary="Get monitor probe results",
+    description="Retrieves historical probe and keep-alive results for a monitor, ordered most recent first.",
+)
+async def get_monitor_results(
+    monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(description="Maximum results to return", ge=1, le=500)] = 50,
+    check_type: Annotated[str | None, Query(description="Filter by check_type ('monitor' or 'keep_alive')")] = None,
+) -> list[PingResultRead]:
+    """
+    Retrieves probe and keep-alive execution telemetry for charting and auditing.
+    """
+    monitor = await db.get(Monitor, monitor_id)
+    if monitor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Monitor not found",
+        )
+    stmt = select(PingResult).where(PingResult.monitor_id == monitor_id)
+    if check_type:
+        stmt = stmt.where(PingResult.check_type == check_type)
+    stmt = stmt.order_by(PingResult.checked_at.desc()).limit(limit)
+    res = await db.execute(stmt)
+    return list(res.scalars().all())
+
+
+@app.post(
+    "/test-url",
+    response_model=ProbeTestResponse,
+    tags=["Diagnostics"],
+    summary="Probe any public URL live",
+    description="Directly invokes the Chapter 5 network resilience and SSRF-hardened engine to probe any public URL.",
+)
+async def test_public_url(payload: ProbeTestRequest) -> ProbeTestResponse:
+    """
+    Executes immediate network probe on any public URL using robust_ping.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, robust_ping, str(payload.url))
+    return ProbeTestResponse(
+        outcome=result.outcome.value,
+        status_code=result.status_code,
+        latency_ms=result.latency_ms,
+        error_detail=result.error_detail,
+        original_url=result.original_url,
+        final_url=result.final_url,
+    )
+
+
+@app.post(
+    "/monitors/{monitor_id}/check",
+    response_model=PingResultRead,
+    tags=["Monitors"],
+    summary="Manually trigger an on-demand probe for a monitor",
+    description="Probes the monitor endpoint immediately using the Chapter 5 engine, updates the monitor status in PostgreSQL, and records a PingResult row.",
+)
+async def trigger_monitor_check(
+    monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> PingResultRead:
+    """
+    Triggers an immediate probe for the specified monitor, updating its status and adding a telemetry record.
+    """
+    monitor = await db.get(Monitor, monitor_id)
+    if monitor is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Monitor not found",
+        )
+    
+    import asyncio
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, robust_ping, monitor.url)
+    
+    now = datetime.now(timezone.utc)
+    monitor.last_checked_at = now
+    monitor.status = result.outcome.value
+    
+    ping_result = PingResult(
+        monitor_id=monitor.id,
+        check_type="monitor",
+        status_code=result.status_code,
+        latency_ms=result.latency_ms,
+        error=result.error_detail,
+        checked_at=now,
+    )
+    db.add(ping_result)
+    await db.commit()
+    await db.refresh(ping_result)
+    return ping_result

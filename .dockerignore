@@ -1,0 +1,36 @@
+# Git repository artifacts
+.git
+.gitignore
+
+# Python virtual environment and caching
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime secrets and environment variables
+.env
+*.env
+!.env.example
+
+# Celery Beat and Redis local state artifacts
+celerybeat-schedule*
+dump.rdb
+
+# IDE and Editor configuration
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project documentation and scratch testing files
+pinGaurd_docs/
+scratch/
+*.log

@@ -17,7 +17,7 @@ PingGuard is developed in six sequential, independently verifiable chapters:
 | **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Completed** | Celery worker pool, Redis message broker, late acks, prefetch multiplier 1, and synchronous worker DB sessions. |
 | **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Completed** | Database-driven periodic sweep (`next_check_at`, `next_keep_alive_at`), concurrency-safe `FOR UPDATE SKIP LOCKED`, and anti-storm recovery. |
 | **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | **Completed** | Fine-grained timeout budgets, SSRF defense, redirect interception, streaming memory limits, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
-| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | **Up Next** | Multi-container environment with health-check dependency chains. |
+| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | **Completed** | Multi-container cluster with healthcheck chains, singleton scheduler, worker scaling, and persistent volumes. |
 
 ---
 
@@ -166,26 +166,98 @@ Chapter 5 equips the Celery worker probing fleet with a hardened, bounded, obser
 
 ## 8. Running the Automated Test Suite
 
-PingGuard includes comprehensive automated tests covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, and HTTPX network resilience:
+PingGuard includes 71 automated unit and integration tests covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, HTTPX network resilience, and Docker orchestration integrity:
 
 ```powershell
 .\.venv\Scripts\python.exe run_tests.py
 ```
-*Executes all 59 automated tests across `test_api.py`, `test_tasks.py`, `test_scheduler.py`, and `test_net.py`.*
+*Executes all 71 automated tests across `test_api.py`, `test_tasks.py`, `test_scheduler.py`, `test_net.py`, and `test_orchestration.py`.*
 
 ---
 
-## 9. Chapter 6 Handoff: Container Orchestration & Production Deployment
+## 9. Chapter 6: Container Orchestration (Docker & Docker Compose)
 
-With Chapters 1 through 5 fully operational:
-* **Chapter 1:** Validates and ingests monitoring configurations.
-* **Chapter 2:** Durably persists models and historical telemetry in PostgreSQL.
-* **Chapter 3:** Distributes task execution across Celery workers via Redis.
-* **Chapter 4:** Periodically evaluates schedules and claims due checks concurrency-safely.
-* **Chapter 5:** Safely executes network probes with SSRF defense, timeouts, and bounded streaming.
+Chapter 6 packages the complete PingGuard architecture into an orchestrated, multi-container environment using Docker and Docker Compose (v2):
 
-In **Chapter 6: Container Orchestration (Docker Compose)**:
-1. Package the entire ecosystem (FastAPI, PostgreSQL, Redis, Celery Worker, Celery Beat) into container images.
-2. Define `docker-compose.yml` with health-check dependency chains (`depends_on: condition: service_healthy`).
-3. Configure isolated internal networking ensuring only the API reverse proxy is exposed publicly.
+```
+                          Inbound Client Traffic (Port 8000)
+                                        │
+                                        ▼
+    ┌────────────────────────────────────────────────────────────────────────┐
+    │              pingguard_internal_net (Docker Bridge)                    │
+    │                                                                        │
+    │   ┌───────────────────────────┐    ┌───────────────────────────────┐   │
+    │   │         web (API)         │    │      worker (Pool xN)         │   │
+    │   │      FastAPI / Uvicorn    │    │      Celery Worker Fleet      │   │
+    │   │         Port: 8000        │    │    Concurrency: 4 / Replica   │   │
+    │   └─────────────┬─────────────┘    └───────────────┬───────────────┘   │
+    │                 │                                  │                   │
+    │                 │  ┌───────────────────────────────┼───────────────┐   │
+    │                 │  │                               │               │   │
+    │                 ▼  ▼                               ▼               ▼   │
+    │   ┌───────────────────────────┐    ┌───────────────────────────┐   │   │
+    │   │            db             │    │           redis           │   │   │
+    │   │       PostgreSQL 15       │    │          Redis 7          │   │   │
+    │   │      Internal: :5432      │    │      Internal: :6379      │   │   │
+    │   └─────────────┬─────────────┘    └───────────────┬───────────┘   │   │
+    │                 │                                  │               │   │
+    │                 │                                  │   ┌───────────┴─┐ │
+    │                 │                                  │   │  scheduler  │ │
+    │                 │                                  └───┤ Celery Beat │ │
+    │                 │                                      │(Singleton=1)│ │
+    │                 │                                      └─────────────┘ │
+    └─────────────────┼──────────────────────────────────┼───────────────────┘
+                      ▼                                  ▼
+             pingguard_pgdata                   pingguard_redis_data
+            (PostgreSQL Volume)                    (Redis Volume)
+            [DURABLE STATE STORE]              [TRANSIENT MESSAGE QUEUE]
+```
+
+### 1. The 5 Compose Services
+* **`db` (`postgres:15-alpine`):** Authoritative relational store. Data persists via named volume `pingguard_pgdata`. Health check: `pg_isready`.
+* **`redis` (`redis:7-alpine`):** Celery task broker and backend. State persists via `pingguard_redis_data`. Health check: `redis-cli ping`.
+* **`web` (`pingguard-app:latest`):** FastAPI control plane. Port `8000:8000` published to host. Depends on `db` and `redis` being healthy.
+* **`worker` (`pingguard-app:latest`):** Celery probing workers executing Chapter 5 resilient network calls. Horizontally scalable.
+* **`scheduler` (`pingguard-app:latest`):** Celery Beat periodic scheduler. **STRICT SINGLETON (`replicas: 1`)**.
+
+### 2. Docker Compose Commands
+
+#### Step 1: Run One-Shot Database Migrations
+Migrations must NOT run concurrently from every replica on container startup:
+```bash
+docker compose run --rm web alembic upgrade head
+```
+
+#### Step 2: Build and Start the Entire Cluster
+```bash
+docker compose up --build -d
+```
+
+#### Step 3: Inspect Service Health & Real-time Logs
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+#### Step 4: Horizontally Scale Probing Workers
+Scale worker replicas dynamically to handle increased probe volume:
+```bash
+docker compose up --scale worker=4 -d
+```
+*(Never scale `scheduler`; Celery Beat must always remain a singleton).*
+
+#### Step 5: Stop the Cluster (Preserving Database State)
+```bash
+docker compose down
+```
+*(Named volumes `pingguard_pgdata` and `pingguard_redis_data` survive teardowns).*
+
+---
+
+## 10. Post-Chapter-6 Cloud Deployment Handoff
+
+For production cloud deployments (AWS, GCP, Render, Kubernetes):
+1. **Managed Data Stores:** Use AWS RDS / GCP Cloud SQL for PostgreSQL and ElastiCache / Memorystore for Redis.
+2. **Release-Phase Migrations:** Execute `alembic upgrade head` in deployment pipelines before releasing new containers.
+3. **External Cluster Monitoring:** Monitor PingGuard's external health at `GET /health` rather than having PingGuard monitor itself.
 

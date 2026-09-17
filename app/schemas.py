@@ -220,6 +220,40 @@ class MonitorRead(BaseModel):
     )
 
 
+class PingResultRead(BaseModel):
+    """
+    Response contract representing an individual probe execution or keep-alive check.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Unique sequential identifier for the result.")
+    monitor_id: int = Field(..., description="Foreign key ID of the parent monitor.")
+    check_type: str = Field(..., description="'monitor' for health checks, 'keep_alive' for wake-up activity.")
+    status_code: int | None = Field(default=None, description="HTTP status code returned by target, or None if connection failed.")
+    latency_ms: float | None = Field(default=None, description="Round-trip latency in milliseconds.")
+    error: str | None = Field(default=None, description="Error classification string if the probe encountered an issue.")
+    checked_at: datetime = Field(..., description="UTC timestamp of the probe execution.")
+
+
+class ProbeTestRequest(BaseModel):
+    """
+    Request contract for live interactive URL probing.
+    """
+    url: HttpUrl = Field(..., description="Public target URL to probe immediately.")
+
+
+class ProbeTestResponse(BaseModel):
+    """
+    Diagnostic response from an immediate URL probe.
+    """
+    outcome: str
+    status_code: int | None
+    latency_ms: float | None
+    error_detail: str | None
+    original_url: str
+    final_url: str | None
+
+
 class MonitorUpdate(BaseModel):
     """
     Request contract for updating an existing monitor's configuration.
