@@ -288,6 +288,17 @@ class TestChapter5NetworkResilience(unittest.TestCase):
         self.assertEqual(called_url, "https://example.com/healthz")
         self.assertEqual(called_headers.get("user-agent"), "PingGuard-KeepAlive/1.0")
 
+    def test_nat64_translation_validation(self) -> None:
+        """Verify NAT64 IPv6 addresses (64:ff9b::/96) allow public IPv4 while blocking private IPv4."""
+        import ipaddress
+        from app.net import is_ip_blocked
+        # 64:ff9b::d818:3910 embeds 216.24.57.16 (public Render IP) -> allowed
+        self.assertFalse(is_ip_blocked(ipaddress.ip_address("64:ff9b::d818:3910")))
+        # 64:ff9b::7f00:1 embeds 127.0.0.1 (loopback) -> blocked
+        self.assertTrue(is_ip_blocked(ipaddress.ip_address("64:ff9b::7f00:1")))
+        # 64:ff9b::0a00:1 embeds 10.0.0.1 (RFC 1918) -> blocked
+        self.assertTrue(is_ip_blocked(ipaddress.ip_address("64:ff9b::0a00:1")))
+
 
 if __name__ == "__main__":
     unittest.main()
