@@ -36,9 +36,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Documentation (stored separately)
-docs/
-*.pdf
 
 # Celery Beat runtime schedule database
 celerybeat-schedule*
