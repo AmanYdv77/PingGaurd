@@ -65,10 +65,10 @@ class PingResultDTO:
 # =============================================================================
 
 # Granular timeouts (seconds)
-DEFAULT_CONNECT_TIMEOUT = float(os.getenv("PING_CONNECT_TIMEOUT", "2.0"))
-DEFAULT_READ_TIMEOUT = float(os.getenv("PING_READ_TIMEOUT", "5.0"))
+DEFAULT_CONNECT_TIMEOUT = float(os.getenv("PING_CONNECT_TIMEOUT", "5.0"))
+DEFAULT_READ_TIMEOUT = float(os.getenv("PING_READ_TIMEOUT", "10.0"))
 DEFAULT_WRITE_TIMEOUT = float(os.getenv("PING_WRITE_TIMEOUT", "5.0"))
-DEFAULT_POOL_TIMEOUT = float(os.getenv("PING_POOL_TIMEOUT", "2.0"))
+DEFAULT_POOL_TIMEOUT = float(os.getenv("PING_POOL_TIMEOUT", "5.0"))
 
 # Maximum response body bytes to stream before closing (default 1 MB)
 DEFAULT_MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", "1048576"))
@@ -120,10 +120,20 @@ class DNSResolutionError(Exception):
     pass
 
 
+NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
 def is_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """
     Evaluates whether an IP address belongs to any blocked, private, or reserved network.
+    
+    Supports RFC 6052 NAT64 Well-Known Prefix (64:ff9b::/96) synthesized by DNS64/NAT64
+    networks for public IPv4 endpoints by recursing on the embedded IPv4 destination.
     """
+    if isinstance(ip, ipaddress.IPv6Address) and ip in NAT64_WELL_KNOWN_PREFIX:
+        embedded_v4 = ipaddress.IPv4Address(ip.packed[-4:])
+        return is_ip_blocked(embedded_v4)
+
     if (
         ip.is_private
         or ip.is_loopback
