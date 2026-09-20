@@ -19,7 +19,6 @@ alembic = "^1.14.0"
 python-dotenv = "^1.0.1"
 celery = {extras = ["redis"], version = "^5.4.0"}
 redis = "^5.0.0"
-requests = "^2.32.0"
 httpx = "^0.28.0"
 
 [build-system]
