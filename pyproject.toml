@@ -2,7 +2,7 @@
 name = "pingguard"
 version = "0.6.0"
 description = "Distributed Uptime Monitoring System — Chapter 6: Docker & Docker Compose Orchestration"
-authors = ["PingGuard Engineering Team"]
+authors = ["Aman Yadav <204555676+AmanYdv77@users.noreply.github.com>"]
 readme = "README.md"
 packages = [{include = "app"}]
 
