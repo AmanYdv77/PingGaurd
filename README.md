@@ -166,12 +166,21 @@ Chapter 5 equips the Celery worker probing fleet with a hardened, bounded, obser
 
 ## 8. Running the Automated Test Suite
 
-PingGuard includes 71 automated unit and integration tests covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, HTTPX network resilience, and Docker orchestration integrity:
+PingGuard includes an automated unit and integration test suite covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, HTTPX network resilience, and Docker orchestration integrity.
 
+The test suite enforces a hard safety guard: tests must run against an isolated test database whose name ends in `_test`.
+
+### PowerShell
 ```powershell
-.\.venv\Scripts\python.exe run_tests.py
+$env:TEST_DATABASE_URL = "postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+pytest -q
 ```
-*Executes all 71 automated tests across `test_api.py`, `test_tasks.py`, `test_scheduler.py`, `test_net.py`, and `test_orchestration.py`.*
+
+### Bash
+```bash
+export TEST_DATABASE_URL="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+pytest -q
+```
 
 ---
 
