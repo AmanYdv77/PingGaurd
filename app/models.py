@@ -1,9 +1,7 @@
 """
-SQLAlchemy 2.0 Typed ORM Models — Chapter 2: The Persistence Layer
+SQLAlchemy 2.0 Typed ORM Models.
 
-Defines the relational schema for PingGuard:
-- Monitor: Configuration, health state, and scheduling timestamps for URL targets.
-- PingResult: Historical execution logs for monitoring and keep-alive activities.
+Defines the relational schema for Monitor configurations and PingResult logs.
 """
 
 from datetime import datetime, timezone

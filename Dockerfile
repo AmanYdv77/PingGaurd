@@ -1,5 +1,5 @@
 # ==============================================================================
-# PingGuard — Chapter 6: Production-Grade Multi-Stage Dockerfile
+# PingGuard — Multi-Stage Application Dockerfile
 #
 # Shared application image for:
 #   1. web       (FastAPI HTTP Control Plane)

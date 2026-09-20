@@ -1,15 +1,8 @@
 """
-Network Resilience & Probing Engine — Chapter 5: httpx & Network Resilience
+Network Resilience & Probing Engine.
 
-Provides a hardened, secure, bounded, and observable network execution layer:
-- Granular timeout phases (connect, read, write, pool).
-- SSRF defense against private IPv4/IPv6 ranges, loopback, link-local, and cloud metadata.
-- Pre-request DNS resolution & DNS rebinding defenses.
-- Redirect SSRF interception hooks preventing escapes to private destinations.
-- Memory-bounded response streaming preventing worker OOMs on oversized bodies.
-- High-precision monotonic latency measurement.
-- Comprehensive exception & status code classification.
-- Reusable across normal health monitoring and keep-alive activity pings.
+Provides an observable network execution layer with timeouts, SSRF defense,
+streaming response bounds, monotonic latency tracking, and structured outcome classification.
 """
 
 from dataclasses import dataclass

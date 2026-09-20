@@ -1,20 +1,10 @@
 """
-Distributed Task Definitions — Chapter 3: Distributed Task Execution
+Distributed Task Definitions.
 
 Defines Celery background tasks:
-- `execute_ping`: Synchronous HTTP health probe, latency recording, and monitor status updates.
-- `execute_keep_alive`: Synchronous lightweight activity request intended to wake/touch idle services.
-
-Architectural Boundaries:
--------------------------
-1. Decoupled Execution: These tasks execute in independent Celery worker processes,
-   completely separated from the FastAPI event loop.
-2. Synchronous Database Access: Workers use isolated `get_sync_db()` sessions,
-   never sharing or reusing FastAPI's `AsyncSession`.
-3. Keep-Alive Reality: Keep-Alive attempts record transmission outcomes and response codes,
-   but do NOT guarantee permanent provider-level uptime.
-4. Security Note (Chapter 5 Handoff): Full SSRF mitigation (private IP filtering,
-   cloud metadata protections, DNS rebinding guards) is scheduled for Chapter 5.
+- `execute_ping`: HTTP health probe, latency recording, and monitor status updates.
+- `execute_keep_alive`: Lightweight activity request intended to wake/touch idle services.
+- `sweep_due_monitors`: Periodic scheduler sweep dispatching due health and keep-alive checks.
 """
 
 import logging
@@ -85,7 +75,6 @@ def execute_ping(self, monitor_id: int) -> dict[str, Any]:
     """
     Executes an uptime health probe for the specified monitor.
     
-    Chapter 5 Network Architecture:
     - Uses shared `robust_ping` powered by httpx.AsyncClient.
     - Enforces SSRF defense, DNS rebinding checks, and redirect interception.
     - Classifies outcomes into UP, DEGRADED, DOWN, UNREACHABLE.
@@ -104,7 +93,7 @@ def execute_ping(self, monitor_id: int) -> dict[str, Any]:
 
         now = datetime.now(timezone.utc)
 
-        # Execute network probe via Chapter 5 shared network engine
+        # Execute network probe via shared network engine
         dto = robust_ping(monitor.url)
 
         # Map PingOutcome to Monitor.status
@@ -175,7 +164,6 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
     """
     Executes an optional lightweight Keep-Alive activity ping for the specified monitor.
     
-    Chapter 5 Network Architecture:
     - Uses shared `robust_keep_alive` powered by httpx.AsyncClient.
     - Sends activity request to `url + keep_alive_path`.
     - Persists result to 'ping_results' with check_type='keep_alive'.
@@ -202,7 +190,7 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
 
         now = datetime.now(timezone.utc)
 
-        # Execute Keep-Alive activity probe via Chapter 5 shared network engine
+        # Execute Keep-Alive activity probe via shared network engine
         dto = robust_keep_alive(monitor.url, monitor.keep_alive_path)
 
         # Persist Keep-Alive telemetry record
@@ -252,7 +240,7 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
 
 
 # =========================================================================
-# Chapter 4: Celery Beat Periodic Scheduling Heartbeat
+# Celery Beat Periodic Scheduling Heartbeat
 # =========================================================================
 
 @celery_app.task(
@@ -262,7 +250,7 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
 )
 def sweep_due_monitors(self) -> dict[str, int]:
     """
-    Chapter 4 — Celery Beat Scheduling Heartbeat.
+    Celery Beat Scheduling Heartbeat.
     
     Decides WHEN health probes and keep-alive activities are due and enqueues them.
     Adheres strictly to the PingGuard architectural separation:
@@ -281,7 +269,7 @@ def sweep_due_monitors(self) -> dict[str, int]:
 
     with get_sync_db() as session:
         # ---------------------------------------------------------------------
-        # Phase 1: Health Monitoring Due Sweep
+        # Health Monitoring Due Sweep
         # ---------------------------------------------------------------------
         monitoring_modes = [MonitorMode.MONITOR.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
         due_monitors = (
@@ -314,7 +302,7 @@ def sweep_due_monitors(self) -> dict[str, int]:
                 raise
 
         # ---------------------------------------------------------------------
-        # Phase 2: Keep-Alive Activity Due Sweep
+        # Keep-Alive Activity Due Sweep
         # ---------------------------------------------------------------------
         keep_alive_modes = [MonitorMode.KEEP_ALIVE.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
         due_keep_alives = (

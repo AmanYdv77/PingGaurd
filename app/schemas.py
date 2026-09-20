@@ -1,9 +1,8 @@
 """
-PingGuard Schemas — Chapter 1: The Request Layer
+PingGuard Schemas.
 
-Defines the core Pydantic v2 data contracts for incoming requests and outgoing responses.
-Adheres strictly to the PingGuard Technical Architecture Blueprint specification,
-including the Optional Keep-Alive extension.
+Defines the core Pydantic v2 data contracts for incoming requests and outgoing responses,
+including the Optional Keep-Alive configuration.
 """
 
 from datetime import datetime
@@ -87,7 +86,7 @@ class MonitorCreate(BaseModel):
         description=(
             "Target HTTP or HTTPS URL to monitor. Validated structurally via HttpUrl. "
             "NOTE: Strict network/SSRF egress validation (private/link-local IP blocking) "
-            "belongs to the probe execution engine in Chapter 5 and is not run during Chapter 1."
+            "is enforced by the probe execution engine."
         ),
         examples=["https://status.github.com", "https://api.stripe.com/health"]
     )
@@ -169,8 +168,7 @@ class MonitorRead(BaseModel):
     """
     Response contract representing a registered monitor.
     
-    Configured with from_attributes=True so that Chapter 2 can serialize
-    SQLAlchemy ORM model instances directly without manual dictionary mapping.
+    Configured with from_attributes=True to serialize SQLAlchemy ORM model instances directly.
     """
     model_config = ConfigDict(from_attributes=True)
 

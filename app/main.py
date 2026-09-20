@@ -1,16 +1,8 @@
 """
-PingGuard API — Chapter 2: The Persistence Layer
+PingGuard API Application.
 
-FastAPI application entry point.
-Implements asynchronous REST endpoints for monitor registration, retrieval,
-update, and listing, backed durably by PostgreSQL via SQLAlchemy 2.0 AsyncSession.
-
-Architectural Rule (Chapter 2 Boundary):
-----------------------------------------
-The database is the single durable source of truth.
-Outbound network pings (requests.get, httpx probes) MUST NEVER be executed
-inside these routes. Probing execution is strictly isolated to background workers
-in Chapter 3.
+FastAPI application entry point implementing asynchronous REST endpoints for
+monitor registration, retrieval, update, listing, and on-demand checks.
 """
 
 from datetime import datetime, timezone
@@ -21,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import __version__
 from app.db import get_db
 from app.models import Monitor, PingResult
 from app.net import robust_ping
@@ -40,14 +33,14 @@ from app.schemas import (
 app = FastAPI(
     title="PingGuard API",
     description=(
-        "Distributed Uptime Monitoring System — Chapter 2: The Persistence Layer.\n\n"
+        "Distributed Uptime Monitoring System.\n\n"
         "Provides non-blocking endpoints backed durably by PostgreSQL via SQLAlchemy 2.0 Async.\n"
         "Manages monitor definitions, scheduling states, and optional keep-alive parameters.\n\n"
         "**Note on Keep-Alive:** Keep-alive activity sends periodic lightweight requests "
         "to reduce idle sleeping on platforms that spin down. It is an optional activity attempt, "
         "not a provider-level guarantee of permanent uptime."
     ),
-    version="2.0.0",
+    version=__version__,
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -73,7 +66,7 @@ async def health_check() -> dict[str, str]:
     return {
         "status": "healthy",
         "service": "PingGuard API",
-        "version": "0.6.0",
+        "version": __version__,
     }
 
 
@@ -305,7 +298,7 @@ async def get_monitor_results(
     response_model=ProbeTestResponse,
     tags=["Diagnostics"],
     summary="Probe any public URL live",
-    description="Directly invokes the Chapter 5 network resilience and SSRF-hardened engine to probe any public URL.",
+    description="Directly invokes the network resilience prober to test any public URL.",
 )
 async def test_public_url(payload: ProbeTestRequest) -> ProbeTestResponse:
     """
@@ -329,7 +322,7 @@ async def test_public_url(payload: ProbeTestRequest) -> ProbeTestResponse:
     response_model=PingResultRead,
     tags=["Monitors"],
     summary="Manually trigger an on-demand probe for a monitor",
-    description="Probes the monitor endpoint immediately using the Chapter 5 engine, updates the monitor status in PostgreSQL, and records a PingResult row.",
+    description="Probes the monitor endpoint immediately, updates monitor status in PostgreSQL, and records a PingResult row.",
 )
 async def trigger_monitor_check(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],

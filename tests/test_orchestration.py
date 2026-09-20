@@ -1,13 +1,5 @@
 """
-PingGuard — Chapter 6 Automated Test Suite: Docker & Docker Compose Orchestration
-
-Validates:
-1. Dockerfile structural integrity (multi-stage, Python 3.12-slim, non-root user, caching).
-2. docker-compose.yml configuration (service isolation, healthcheck chains, volume persistence,
-   singleton Beat enforcement, port boundaries, network isolation).
-3. .dockerignore protection (prevents secret and artifact leaks into image build context).
-4. Container network URL translation and DNS compatibility.
-5. API /health endpoint contract for container orchestration readiness.
+Automated Test Suite for Docker and Compose Orchestration.
 """
 
 import os
@@ -21,8 +13,8 @@ from app.main import app
 PINGGUARD_DIR = Path(__file__).resolve().parent.parent
 
 
-class TestChapter6Orchestration(unittest.TestCase):
-    """Automated verification suite for Chapter 6 Docker & Compose specifications."""
+class TestOrchestration(unittest.TestCase):
+    """Automated verification suite for Docker & Compose specifications."""
 
     def setUp(self):
         self.dockerfile_path = PINGGUARD_DIR / "Dockerfile"
@@ -177,7 +169,7 @@ class TestChapter6Orchestration(unittest.TestCase):
         data = response.json()
         self.assertIn(data.get("status"), ["ok", "healthy"])
         self.assertEqual(data.get("service"), "PingGuard API")
-        self.assertEqual(data.get("version"), "0.6.0")
+        self.assertEqual(data.get("version"), "1.0.0")
 
     # --------------------------------------------------------------------------
     # 5. Database URL Resolution in Container Context

@@ -1,5 +1,5 @@
 # ==============================================================================
-# PingGuard — Chapter 6: Multi-Container Orchestration Architecture
+# PingGuard — Multi-Container Orchestration Architecture
 #
 # Coordinates 5 isolated services:
 #   1. db        (Authoritative PostgreSQL persistence + pgdata volume)

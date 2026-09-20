@@ -1,24 +1,5 @@
 """
-Comprehensive test suite for PingGuard Chapter 1 (FastAPI & Async Python).
-
-Covers:
-1. Valid monitor creation with default interval and backward-compatible payloads.
-2. Input validation rejections (invalid URL, out-of-bounds intervals, invalid names).
-3. Keep-alive configuration and validation:
-   - TEST 1: Normal monitor creation.
-   - TEST 2: Old request format without new fields (backward compatibility).
-   - TEST 3: Monitor + Keep-Alive configuration works.
-   - TEST 4: Keep-alive enabled without interval fails (422).
-   - TEST 5: Keep-alive interval below 15 fails (422).
-   - TEST 6: Keep-alive interval above 86400 fails (422).
-   - TEST 7: Keep-alive path "/health" works.
-   - TEST 8: Keep-alive path "https://abc.com" fails (422).
-   - TEST 9: Monitor-only mode with keep_alive_enabled=false works.
-   - TEST 10: GET returns all new fields.
-   - TEST 11: UPDATE can modify keep-alive configuration.
-   - TEST 12: GET unknown monitor still returns 404.
-   - TEST 13: Invalid original fields still produce 422.
-   - TEST 14: No outbound network request occurs during monitor creation.
+Comprehensive test suite for PingGuard REST API & Persistence Layer.
 """
 
 import unittest
@@ -64,7 +45,7 @@ def _get_pg_conn_str(url: str) -> str:
     return url
 
 
-class TestPingGuardChapter2(unittest.TestCase):
+class TestPingGuardAPI(unittest.TestCase):
     def setUp(self) -> None:
         """Reset PostgreSQL tables and dependency overrides before every test run."""
         app.dependency_overrides[get_db] = override_get_db
@@ -536,11 +517,11 @@ class TestPingGuardChapter2(unittest.TestCase):
         self.assertIn("swagger-ui", response.text.lower())
 
     # =========================================================================
-    # CHAPTER 2 SPECIFIC TESTS: Persistence, Restart, Relationships, Cascade
+    # Persistence, Restart, Relationships, and Cascade Tests
     # =========================================================================
     def test_keep_alive_fields_persisted_in_postgresql(self) -> None:
         """
-        Chapter 2 - Req 36: Verify Monitor with Keep-Alive configuration is persisted
+        Verify Monitor with Keep-Alive configuration is persisted
         durably in PostgreSQL with exact column values and next_keep_alive_at timestamp.
         """
         payload = {
@@ -582,7 +563,7 @@ class TestPingGuardChapter2(unittest.TestCase):
 
     def test_persistence_across_app_restart(self) -> None:
         """
-        Chapter 2 - Req 35 & 37: Verify monitor and Keep-Alive data survive
+        Verify monitor and Keep-Alive data survive
         a complete FastAPI application teardown and restart.
         """
         import sys
@@ -627,7 +608,7 @@ class TestPingGuardChapter2(unittest.TestCase):
 
     def test_ping_result_orm_relationship_both_check_types(self) -> None:
         """
-        Chapter 2 - Req 38: Verify PingResult ORM model and relationship to Monitor.
+        Verify PingResult ORM model and relationship to Monitor.
         Confirms both 'monitor' and 'keep_alive' check types can belong to the same Monitor.
         """
         import asyncio
@@ -683,7 +664,7 @@ class TestPingGuardChapter2(unittest.TestCase):
 
     def test_cascade_delete_monitor_and_ping_results(self) -> None:
         """
-        Chapter 2 - Req 39: Verify cascade delete.
+        Verify cascade delete:
         Deleting a Monitor must cascade delete all associated PingResult rows.
         """
         import asyncio
@@ -734,7 +715,7 @@ class TestPingGuardChapter2(unittest.TestCase):
         data = response.json()
         self.assertIn(data.get("status"), ["ok", "healthy"])
         self.assertEqual(data.get("service"), "PingGuard API")
-        self.assertEqual(data.get("version"), "0.6.0")
+        self.assertEqual(data.get("version"), "1.0.0")
 
     def test_delete_monitor_api(self):
         """Verify DELETE /monitors/{id} deletes the monitor and returns 204."""
@@ -770,6 +751,19 @@ class TestPingGuardChapter2(unittest.TestCase):
         # Non-existent monitor 404
         bad_resp = self.client.get("/monitors/999999/results")
         self.assertEqual(bad_resp.status_code, 404)
+
+    def test_version_consistency(self):
+        """Verify app.__version__ matches the version declared in pyproject.toml."""
+        import tomllib
+        from pathlib import Path
+        import app
+
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+        declared_version = data["tool"]["poetry"]["version"]
+        self.assertEqual(app.__version__, declared_version)
+        self.assertEqual(app.__version__, "1.0.0")
 
 
 if __name__ == "__main__":

@@ -1,17 +1,5 @@
 """
-Automated Test Suite for Chapter 3 Tasks with Chapter 5 Network Layer Integration
-
-Validates:
-1. Safe URL joining helper for Keep-Alive destinations.
-2. `execute_ping` successful execution, latency recording, and status mapping.
-3. `execute_ping` non-existent monitor handling (clean exit without crash).
-4. `execute_keep_alive` successful execution and telemetry recording.
-5. `execute_keep_alive` gatekeeper: skips cleanly when keep_alive_enabled=False.
-6. `execute_keep_alive` does not alter primary monitor uptime status.
-7. Transient error handling and timeout classification via PingResultDTO.
-8. Status code mappings (2xx/3xx -> UP, 4xx -> DEGRADED, 5xx -> DOWN).
-9. Task idempotency across repeat executions.
-10. Celery `.delay()` asynchronous invocation flow.
+Automated Test Suite for Worker Tasks and Network Probing Integration.
 """
 
 import unittest
@@ -34,7 +22,7 @@ def _get_pg_conn_str(url: str) -> str:
     return url
 
 
-class TestChapter3Tasks(unittest.TestCase):
+class TestWorkerTasks(unittest.TestCase):
     def setUp(self) -> None:
         """Reset PostgreSQL tables before each test run."""
         sync_url = _get_pg_conn_str(DATABASE_URL)

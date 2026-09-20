@@ -1,9 +1,7 @@
 """
-Database Configuration & Session Providers — Chapter 3: Distributed Task Execution
+Database Configuration & Session Providers.
 
-Provides:
-1. Asynchronous engine & session factory (`AsyncSessionLocal`, `get_db`) for FastAPI.
-2. Synchronous engine & session factory (`SyncSessionLocal`, `get_sync_db`) for Celery workers.
+Provides asynchronous engine/sessions for FastAPI and synchronous engine/sessions for Celery workers.
 """
 
 import os

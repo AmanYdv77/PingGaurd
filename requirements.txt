@@ -1,4 +1,4 @@
-# PingGuard — Chapter 3: Distributed Task Execution
+# PingGuard Runtime Dependencies
 # Core Web Framework & Validation
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0

@@ -1,6 +1,7 @@
 """
 PingGuard Core Application Package.
-Chapter 1: FastAPI & Async Python — The Request Layer.
+
+Distributed Uptime Monitoring & Keep-Alive System.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

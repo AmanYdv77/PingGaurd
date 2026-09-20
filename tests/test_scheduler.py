@@ -1,17 +1,5 @@
 """
-Automated Test Suite for Chapter 4 — Celery Beat: The Scheduling Heartbeat
-
-Validates:
-1. Single static sweep schedule in `celery_app.conf.beat_schedule`.
-2. `sweep_due_monitors`: Overdue health check triggers `execute_ping.delay(mid)` and advances `next_check_at`.
-3. `sweep_due_monitors`: Overdue keep-alive triggers `execute_keep_alive.delay(mid)` and advances `next_keep_alive_at`.
-4. `sweep_due_monitors`: Dual mode (`monitor_and_keep_alive`) independently enqueues both tasks when both are due.
-5. `sweep_due_monitors`: Dual mode independent timing (only enqueues the task whose timestamp is due).
-6. `sweep_due_monitors`: Mode gatekeeper (keep_alive_enabled=False never triggers keep-alive even if timestamp is past).
-7. Concurrency safety: `SELECT ... FOR UPDATE SKIP LOCKED` skips rows locked by a concurrent transaction.
-8. Missed schedules / Beat recovery: Single task enqueued for overdue monitor, timestamps advance from current time (no catch-up storms).
-9. Failure resilience: Redis failure during `.delay()` triggers transaction rollback so timestamps do not advance.
-10. Idle sweep: Graceful execution when no monitors are due.
+Automated Test Suite for Periodic Scheduler Sweep.
 """
 
 import threading
@@ -36,7 +24,7 @@ def _get_pg_conn_str(url: str) -> str:
     return url
 
 
-class TestChapter4Scheduler(unittest.TestCase):
+class TestSchedulerSweep(unittest.TestCase):
     def setUp(self) -> None:
         """Reset PostgreSQL tables before each test run."""
         sync_url = _get_pg_conn_str(DATABASE_URL)

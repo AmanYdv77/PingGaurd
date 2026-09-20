@@ -1,18 +1,5 @@
 """
-Automated Test Suite for Chapter 5: httpx & Network Resilience
-
-Validates:
-1. Outcome classification: 2xx/3xx -> UP, 4xx -> DEGRADED, 5xx -> DOWN.
-2. Timeout classification: connect_timeout vs read_timeout.
-3. SSRF defense against IPv4/IPv6 loopback, RFC 1918, link-local, and cloud metadata (169.254.169.254).
-4. DNS resolution failure mapping to dns_error.
-5. DNS rebinding defense (rejecting domains dynamically resolving to private IPs).
-6. Redirect SSRF defense (intercepting 302 redirects targeting private destinations).
-7. Memory-bounded streaming protection for oversized responses.
-8. TLS/Certificate error classification to tls_error.
-9. Credential redaction in sensitive URLs.
-10. Scheme enforcement (blocking non-http/https schemes).
-11. Keep-Alive execution using keep_alive_path and distinct User-Agent.
+Automated Test Suite for Network Resilience and SSRF Probing Engine.
 """
 
 import asyncio
@@ -35,7 +22,7 @@ from app.net import (
 )
 
 
-class TestChapter5NetworkResilience(unittest.TestCase):
+class TestNetworkResilience(unittest.TestCase):
     # =========================================================================
     # 1. Status Code Classification Tests
     # =========================================================================

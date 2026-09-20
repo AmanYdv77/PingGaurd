@@ -1,5 +1,5 @@
 """
-Celery Application & Worker Configuration — Chapter 3: Distributed Task Execution
+Celery Application & Worker Configuration.
 
 Configures the Celery distributed task queue backed by Redis:
 - JSON-only serialization for safe message passing.
@@ -33,7 +33,7 @@ celery_app = Celery(
     include=["app.tasks"],
 )
 
-# Apply production-grade architectural defaults from blueprint
+# Apply architectural configuration defaults
 celery_app.conf.update(
     # Strict JSON serialization (prevents unsafe pickle exploitation)
     task_serializer="json",
@@ -60,7 +60,7 @@ celery_app.conf.update(
     # Explicit task tracking
     task_track_started=True,
 
-    # Chapter 4: Celery Beat Periodic Scheduling Heartbeat
+    # Celery Beat Periodic Scheduling Heartbeat
     # Exactly ONE static periodic sweep entry querying PostgreSQL for due work.
     # No dynamic per-monitor entries are defined here to prevent config churn.
     beat_schedule={
