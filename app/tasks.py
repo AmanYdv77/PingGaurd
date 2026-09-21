@@ -21,6 +21,7 @@ from app.net import (
     robust_keep_alive,
     robust_ping,
 )
+from celery.exceptions import SoftTimeLimitExceeded
 from app.schemas import MonitorMode, MonitorStatus
 from app.status import outcome_to_status
 from app.worker import celery_app
@@ -86,67 +87,103 @@ def execute_ping(self, monitor_id: int) -> dict[str, Any]:
     """
     logger.info("Starting ping monitor_id=%s", monitor_id)
 
-    with get_sync_db() as session:
-        monitor = session.get(Monitor, monitor_id)
-        if monitor is None:
-            logger.warning("Monitor not found for execute_ping monitor_id=%s", monitor_id)
-            return {"status": "not_found", "monitor_id": monitor_id}
+    try:
+        with get_sync_db() as session:
+            monitor = session.get(Monitor, monitor_id)
+            if monitor is None:
+                logger.warning("Monitor not found for execute_ping monitor_id=%s", monitor_id)
+                return {"status": "not_found", "monitor_id": monitor_id}
 
-        now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
 
-        # Execute network probe via shared network engine
-        dto = robust_ping(monitor.url)
+            # Execute network probe via shared network engine
+            dto = robust_ping(monitor.url)
 
-        # Map PingOutcome to Monitor.status via centralised mapping
-        monitor.status = outcome_to_status(dto.outcome).value
+            # Map PingOutcome to Monitor.status via centralised mapping
+            monitor.status = outcome_to_status(dto.outcome).value
 
-        # Update monitor telemetry timestamp
-        monitor.last_checked_at = now
+            # Update monitor telemetry timestamp
+            monitor.last_checked_at = now
 
-        # Persist PingResult record
-        save_ping_result(
-            session=session,
-            monitor_id=monitor_id,
-            check_type="monitor",
-            status_code=dto.status_code,
-            latency_ms=dto.latency_ms,
-            error=dto.error_detail,
-            checked_at=now,
-        )
-
-        logger.info(
-            "Ping completed monitor_id=%s outcome=%s status_code=%s latency_ms=%s error=%s",
-            monitor_id,
-            dto.outcome.value,
-            dto.status_code,
-            dto.latency_ms,
-            dto.error_detail,
-        )
-
-        # Retry transient network failures only (timeouts, connection drops)
-        # Strictly DO NOT retry ssrf_blocked, redirect_error, or tls_error
-        TRANSIENT_ERRORS = ("connect_timeout", "read_timeout", "write_timeout", "pool_timeout", "connect_error")
-        if dto.error_detail in TRANSIENT_ERRORS and self.request.retries < self.max_retries:
-            countdown = 2 ** self.request.retries
-            logger.warning(
-                "Transient network error on monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)...",
-                monitor_id,
-                dto.error_detail,
-                countdown,
-                self.request.retries + 1,
-                self.max_retries,
+            # Persist PingResult record
+            save_ping_result(
+                session=session,
+                monitor_id=monitor_id,
+                check_type="monitor",
+                status_code=dto.status_code,
+                latency_ms=dto.latency_ms,
+                error=dto.error_detail,
+                checked_at=now,
             )
-            raise self.retry(exc=Exception(dto.error_detail), countdown=countdown)
 
+            logger.info(
+                "Ping completed monitor_id=%s outcome=%s status_code=%s latency_ms=%s error=%s",
+                monitor_id,
+                dto.outcome.value,
+                dto.status_code,
+                dto.latency_ms,
+                dto.error_detail,
+            )
+
+            # Retry transient network failures only (timeouts, connection drops)
+            # Strictly DO NOT retry ssrf_blocked, redirect_error, or tls_error
+            TRANSIENT_ERRORS = (
+                "connect_timeout",
+                "read_timeout",
+                "write_timeout",
+                "pool_timeout",
+                "total_timeout",
+                "connect_error",
+            )
+            if dto.error_detail in TRANSIENT_ERRORS and self.request.retries < self.max_retries:
+                countdown = 2 ** self.request.retries
+                logger.warning(
+                    "Transient network error on monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)...",
+                    monitor_id,
+                    dto.error_detail,
+                    countdown,
+                    self.request.retries + 1,
+                    self.max_retries,
+                )
+                raise self.retry(exc=Exception(dto.error_detail), countdown=countdown)
+
+            return {
+                "status": "completed",
+                "monitor_id": monitor_id,
+                "check_type": "monitor",
+                "outcome": dto.outcome.value,
+                "status_code": dto.status_code,
+                "latency_ms": dto.latency_ms,
+                "error": dto.error_detail,
+                "final_url": dto.final_url,
+            }
+
+    except SoftTimeLimitExceeded:
+        logger.error("Soft time limit exceeded in execute_ping for monitor_id=%s", monitor_id)
+        now = datetime.now(timezone.utc)
+        with get_sync_db() as recovery_session:
+            mon = recovery_session.get(Monitor, monitor_id)
+            if mon:
+                mon.status = outcome_to_status(PingOutcome.DOWN).value
+                mon.last_checked_at = now
+            save_ping_result(
+                session=recovery_session,
+                monitor_id=monitor_id,
+                check_type="monitor",
+                status_code=None,
+                latency_ms=None,
+                error="task_soft_time_limit",
+                checked_at=now,
+            )
         return {
             "status": "completed",
             "monitor_id": monitor_id,
             "check_type": "monitor",
-            "outcome": dto.outcome.value,
-            "status_code": dto.status_code,
-            "latency_ms": dto.latency_ms,
-            "error": dto.error_detail,
-            "final_url": dto.final_url,
+            "outcome": PingOutcome.DOWN.value,
+            "status_code": None,
+            "latency_ms": None,
+            "error": "task_soft_time_limit",
+            "final_url": None,
         }
 
 
@@ -168,70 +205,106 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
     """
     logger.info("Starting keep_alive monitor_id=%s", monitor_id)
 
-    with get_sync_db() as session:
-        monitor = session.get(Monitor, monitor_id)
-        if monitor is None:
-            logger.warning("Monitor not found for execute_keep_alive monitor_id=%s", monitor_id)
-            return {"status": "not_found", "monitor_id": monitor_id}
+    try:
+        with get_sync_db() as session:
+            monitor = session.get(Monitor, monitor_id)
+            if monitor is None:
+                logger.warning("Monitor not found for execute_keep_alive monitor_id=%s", monitor_id)
+                return {"status": "not_found", "monitor_id": monitor_id}
 
-        # Gatekeeper: ensure keep-alive is currently enabled
-        if not monitor.keep_alive_enabled:
-            logger.info("Keep-alive skipped monitor_id=%s reason=disabled", monitor_id)
-            return {"status": "skipped", "reason": "keep_alive_disabled", "monitor_id": monitor_id}
+            # Gatekeeper: ensure keep-alive is currently enabled
+            if not monitor.keep_alive_enabled:
+                logger.info("Keep-alive skipped monitor_id=%s reason=disabled", monitor_id)
+                return {"status": "skipped", "reason": "keep_alive_disabled", "monitor_id": monitor_id}
 
-        # Validate URL presence
-        if not monitor.url:
-            logger.error("Keep-alive failed monitor_id=%s reason=missing_url", monitor_id)
-            return {"status": "error", "reason": "missing_url", "monitor_id": monitor_id}
+            # Validate URL presence
+            if not monitor.url:
+                logger.error("Keep-alive failed monitor_id=%s reason=missing_url", monitor_id)
+                return {"status": "error", "reason": "missing_url", "monitor_id": monitor_id}
 
-        now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
 
-        # Execute Keep-Alive activity probe via shared network engine
-        dto = robust_keep_alive(monitor.url, monitor.keep_alive_path)
+            # Execute Keep-Alive activity probe via shared network engine
+            dto = robust_keep_alive(monitor.url, monitor.keep_alive_path)
 
-        # Persist Keep-Alive telemetry record
-        save_ping_result(
-            session=session,
-            monitor_id=monitor_id,
-            check_type="keep_alive",
-            status_code=dto.status_code,
-            latency_ms=dto.latency_ms,
-            error=dto.error_detail,
-            checked_at=now,
-        )
-
-        logger.info(
-            "Keep-alive completed monitor_id=%s outcome=%s status_code=%s latency_ms=%s error=%s",
-            monitor_id,
-            dto.outcome.value,
-            dto.status_code,
-            dto.latency_ms,
-            dto.error_detail,
-        )
-
-        # Retry transient network failures only
-        TRANSIENT_ERRORS = ("connect_timeout", "read_timeout", "write_timeout", "pool_timeout", "connect_error")
-        if dto.error_detail in TRANSIENT_ERRORS and self.request.retries < self.max_retries:
-            countdown = 2 ** self.request.retries
-            logger.warning(
-                "Transient network error in keep-alive for monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)...",
-                monitor_id,
-                dto.error_detail,
-                countdown,
-                self.request.retries + 1,
-                self.max_retries,
+            # Persist Keep-Alive telemetry record
+            save_ping_result(
+                session=session,
+                monitor_id=monitor_id,
+                check_type="keep_alive",
+                status_code=dto.status_code,
+                latency_ms=dto.latency_ms,
+                error=dto.error_detail,
+                checked_at=now,
             )
-            raise self.retry(exc=Exception(dto.error_detail), countdown=countdown)
 
+            logger.info(
+                "Keep-alive completed monitor_id=%s outcome=%s status_code=%s latency_ms=%s error=%s",
+                monitor_id,
+                dto.outcome.value,
+                dto.status_code,
+                dto.latency_ms,
+                dto.error_detail,
+            )
+
+            # Retry transient network failures only
+            TRANSIENT_ERRORS = (
+                "connect_timeout",
+                "read_timeout",
+                "write_timeout",
+                "pool_timeout",
+                "total_timeout",
+                "connect_error",
+            )
+            if dto.error_detail in TRANSIENT_ERRORS and self.request.retries < self.max_retries:
+                countdown = 2 ** self.request.retries
+                logger.warning(
+                    "Transient network error in keep-alive for monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)...",
+                    monitor_id,
+                    dto.error_detail,
+                    countdown,
+                    self.request.retries + 1,
+                    self.max_retries,
+                )
+                raise self.retry(exc=Exception(dto.error_detail), countdown=countdown)
+
+            return {
+                "status": "completed",
+                "monitor_id": monitor_id,
+                "check_type": "keep_alive",
+                "outcome": dto.outcome.value,
+                "status_code": dto.status_code,
+                "latency_ms": dto.latency_ms,
+                "error": dto.error_detail,
+                "final_url": dto.final_url,
+            }
+
+    except SoftTimeLimitExceeded:
+        logger.error("Soft time limit exceeded in execute_keep_alive for monitor_id=%s", monitor_id)
+        now = datetime.now(timezone.utc)
+        with get_sync_db() as recovery_session:
+            mon = recovery_session.get(Monitor, monitor_id)
+            if mon:
+                mon.status = outcome_to_status(PingOutcome.DOWN).value
+                mon.last_checked_at = now
+            save_ping_result(
+                session=recovery_session,
+                monitor_id=monitor_id,
+                check_type="keep_alive",
+                status_code=None,
+                latency_ms=None,
+                error="task_soft_time_limit",
+                checked_at=now,
+            )
         return {
             "status": "completed",
             "monitor_id": monitor_id,
             "check_type": "keep_alive",
-            "outcome": dto.outcome.value,
-            "status_code": dto.status_code,
-            "latency_ms": dto.latency_ms,
-            "error": dto.error_detail,
-            "final_url": dto.final_url,
+            "outcome": PingOutcome.DOWN.value,
+            "status_code": None,
+            "latency_ms": None,
+            "error": "task_soft_time_limit",
+            "final_url": None,
         }
 
 

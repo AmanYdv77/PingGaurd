@@ -293,6 +293,72 @@ class TestNetworkResilience(unittest.TestCase):
         # 64:ff9b::0a00:1 embeds 10.0.0.1 (RFC 1918) -> blocked
         self.assertTrue(is_ip_blocked(ipaddress.ip_address("64:ff9b::0a00:1")))
 
+    # =========================================================================
+    # Task A8: Total Deadline (Slow-Drip) Test
+    # =========================================================================
+    def test_slow_drip_total_timeout_enforced(self) -> None:
+        """
+        Verify that a server dripping chunks slowly (1 byte every 0.5s for 20s)
+        is aborted by total_timeout within < 2.5s with error_detail='total_timeout'.
+        """
+        import asyncio
+        import time
+
+        async def _run_test():
+            async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+                try:
+                    line = await reader.readline()
+                    while line and line != b"\r\n":
+                        line = await reader.readline()
+
+                    writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n")
+                    await writer.drain()
+
+                    for _ in range(40):
+                        writer.write(b"1\r\nX\r\n")
+                        await writer.drain()
+                        await asyncio.sleep(0.5)
+
+                    writer.write(b"0\r\n\r\n")
+                    await writer.drain()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+            server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
+            host, port = server.sockets[0].getsockname()
+            url = f"http://127.0.0.1:{port}/"
+
+            async with server:
+                server_task = asyncio.create_task(server.serve_forever())
+                try:
+                    t0 = time.monotonic()
+                    res = await perform_http_probe(
+                        url=url,
+                        read_timeout=2.0,
+                        allow_loopback=True,
+                        total_timeout=1.0,
+                    )
+                    elapsed = time.monotonic() - t0
+                    return res, elapsed
+                finally:
+                    server_task.cancel()
+                    try:
+                        await server_task
+                    except asyncio.CancelledError:
+                        pass
+
+        res, elapsed = asyncio.run(_run_test())
+        self.assertEqual(res.outcome, PingOutcome.UNREACHABLE)
+        self.assertEqual(res.error_detail, "total_timeout")
+        self.assertLess(elapsed, 2.5)
+
 
 if __name__ == "__main__":
     unittest.main()
+

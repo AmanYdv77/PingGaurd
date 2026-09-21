@@ -163,3 +163,44 @@ def test_weak_passwords_allowed_in_test_environment():
     settings = Settings(database_url=test_url, environment="test")
     assert settings.environment == "test"
 
+
+# =============================================================================
+# Task A8: Probe Total Timeout & Celery Limit Budget Tests
+# =============================================================================
+
+def test_probe_total_timeout_settings_defaults():
+    """Verify probe total timeout and Celery time limits have expected defaults."""
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.probe_total_timeout_seconds == 8.0
+    assert s.celery_soft_time_limit == 10
+    assert s.celery_hard_time_limit == 15
+
+
+def test_celery_soft_time_limit_too_low_raises():
+    """Verify celery_soft_time_limit < probe_total_timeout_seconds + 2 raises ValidationError."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            probe_total_timeout_seconds=9.0,
+            celery_soft_time_limit=10,
+        )
+    assert "celery_soft_time_limit" in str(exc_info.value)
+
+
+def test_celery_hard_time_limit_too_low_raises():
+    """Verify celery_hard_time_limit < celery_soft_time_limit + 3 raises ValidationError."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            celery_soft_time_limit=10,
+            celery_hard_time_limit=12,
+        )
+    assert "celery_hard_time_limit" in str(exc_info.value)
+
+

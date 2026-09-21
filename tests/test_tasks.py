@@ -356,6 +356,59 @@ class TestWorkerTasks(unittest.TestCase):
         finally:
             celery_app.conf.task_always_eager = False
 
+    # =========================================================================
+    # Task A8: Soft Time Limit Tests
+    # =========================================================================
+    @patch("app.tasks.robust_ping")
+    def test_execute_ping_soft_time_limit_exceeded(self, mock_ping: MagicMock) -> None:
+        """Verify SoftTimeLimitExceeded writes PingResult(outcome=DOWN, error='task_soft_time_limit') and updates status='down'."""
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        mock_ping.side_effect = SoftTimeLimitExceeded("Task soft time limit exceeded")
+        mid = self._create_test_monitor(url="https://soft-limit-ping.com")
+
+        result = execute_ping(mid)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outcome"], PingOutcome.DOWN.value)
+        self.assertEqual(result["error"], "task_soft_time_limit")
+
+        with get_sync_db() as session:
+            mon = session.get(Monitor, mid)
+            self.assertEqual(mon.status, MonitorStatus.DOWN.value)
+            self.assertIsNotNone(mon.last_checked_at)
+
+            pr = session.query(PingResult).filter_by(monitor_id=mid).first()
+            self.assertIsNotNone(pr)
+            self.assertEqual(pr.check_type, "monitor")
+            self.assertEqual(pr.error, "task_soft_time_limit")
+
+    @patch("app.tasks.robust_keep_alive")
+    def test_execute_keep_alive_soft_time_limit_exceeded(self, mock_ka: MagicMock) -> None:
+        """Verify SoftTimeLimitExceeded in keep_alive writes PingResult and sets status='down'."""
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        mock_ka.side_effect = SoftTimeLimitExceeded("Task soft time limit exceeded")
+        mid = self._create_test_monitor(
+            url="https://soft-limit-ka.com",
+            mode="monitor_and_keep_alive",
+            keep_alive_enabled=True,
+            keep_alive_path="/health",
+        )
+
+        result = execute_keep_alive(mid)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outcome"], PingOutcome.DOWN.value)
+        self.assertEqual(result["error"], "task_soft_time_limit")
+
+        with get_sync_db() as session:
+            mon = session.get(Monitor, mid)
+            self.assertEqual(mon.status, MonitorStatus.DOWN.value)
+
+            pr = session.query(PingResult).filter_by(monitor_id=mid, check_type="keep_alive").first()
+            self.assertIsNotNone(pr)
+            self.assertEqual(pr.error, "task_soft_time_limit")
+
 
 if __name__ == "__main__":
     unittest.main()
+

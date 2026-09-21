@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     http_user_agent: str = "PingGuard/1.0"
     http_keep_alive_user_agent: str = "PingGuard-KeepAlive/1.0"
 
+    # 5. Probe Total Deadline & Celery Task Time Limits
+    probe_total_timeout_seconds: float = 8.0
+    celery_soft_time_limit: int = 10
+    celery_hard_time_limit: int = 15
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str | None) -> str:
@@ -75,6 +80,7 @@ class Settings(BaseSettings):
         "http_read_timeout",
         "http_write_timeout",
         "http_pool_timeout",
+        "probe_total_timeout_seconds",
     )
     @classmethod
     def validate_positive_float(cls, v: float) -> float:
@@ -83,12 +89,12 @@ class Settings(BaseSettings):
             raise ValueError("Timeout and interval values must be greater than zero")
         return v
 
-    @field_validator("http_max_response_bytes")
+    @field_validator("http_max_response_bytes", "celery_soft_time_limit", "celery_hard_time_limit")
     @classmethod
     def validate_positive_int(cls, v: int) -> int:
-        """Validate that response size is strictly positive."""
+        """Validate that integer values are strictly positive."""
         if v <= 0:
-            raise ValueError("Response size must be greater than zero")
+            raise ValueError("Value must be greater than zero")
         return v
 
     @field_validator("http_max_redirects")
@@ -98,6 +104,27 @@ class Settings(BaseSettings):
         if not (0 <= v <= 20):
             raise ValueError("http_max_redirects must be between 0 and 20")
         return v
+
+    @model_validator(mode="after")
+    def validate_timeout_budget(self) -> "Settings":
+        """
+        Validate that probe total timeout and Celery time limits align.
+
+        Requires:
+        - celery_soft_time_limit >= probe_total_timeout_seconds + 2
+        - celery_hard_time_limit >= celery_soft_time_limit + 3
+        """
+        if self.celery_soft_time_limit < self.probe_total_timeout_seconds + 2:
+            raise ValueError(
+                f"celery_soft_time_limit ({self.celery_soft_time_limit}) must be at least "
+                f"probe_total_timeout_seconds + 2 ({self.probe_total_timeout_seconds + 2:.1f})"
+            )
+        if self.celery_hard_time_limit < self.celery_soft_time_limit + 3:
+            raise ValueError(
+                f"celery_hard_time_limit ({self.celery_hard_time_limit}) must be at least "
+                f"celery_soft_time_limit + 3 ({self.celery_soft_time_limit + 3})"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_db_password(self) -> "Settings":
