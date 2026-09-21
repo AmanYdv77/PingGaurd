@@ -279,7 +279,9 @@ class TestNetworkResilience(unittest.TestCase):
         )
         self.assertEqual(result.outcome, PingOutcome.UP)
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(called_url, "https://example.com/healthz")
+        self.assertEqual(result.final_url, "https://example.com/healthz")
+        self.assertTrue(called_url.endswith("/healthz"))
+        self.assertEqual(called_headers.get("host"), "example.com")
         self.assertEqual(called_headers.get("user-agent"), "PingGuard-KeepAlive/1.0")
 
     def test_nat64_translation_validation(self) -> None:
@@ -358,7 +360,151 @@ class TestNetworkResilience(unittest.TestCase):
         self.assertEqual(res.error_detail, "total_timeout")
         self.assertLess(elapsed, 2.5)
 
+    # =========================================================================
+    # Task A9: DNS-Rebinding & IP Pinning Tests
+    # =========================================================================
+    def test_dns_rebinding_pinned_ip_used(self) -> None:
+        """
+        Test (a) Rebinding: injected resolver returns public IP on call 1 and 127.0.0.1 on call 2.
+        Assert resolver called exactly once and outgoing request URL host equals the FIRST (validated) IP,
+        with Host header equal to the original hostname.
+        """
+        call_count = 0
+        def rebinding_resolver(host: str, port: int, type: int = 0):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+        captured_request: httpx.Request | None = None
+        def mock_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_request
+            captured_request = request
+            return httpx.Response(200, text="OK")
+
+        transport = httpx.MockTransport(mock_handler)
+        result = robust_ping(
+            "https://rebinding-victim.example.com/resource",
+            allow_loopback=False,
+            transport=transport,
+            dns_resolver=rebinding_resolver,
+        )
+
+        self.assertEqual(result.outcome, PingOutcome.UP)
+        self.assertEqual(call_count, 1)
+        self.assertIsNotNone(captured_request)
+        self.assertEqual(captured_request.url.host, "93.184.216.34")
+        self.assertEqual(captured_request.headers.get("host"), "rebinding-victim.example.com")
+
+    def test_redirect_to_blocked_ip_or_private_host_blocked(self) -> None:
+        """
+        Test (b): Redirect to a blocked IP literal and redirect to a hostname resolving
+        to a private IP both end with ssrf_blocked and no request is sent to the blocked target.
+        """
+        # Case 1: Redirect to blocked IP literal
+        received_requests_1: list[httpx.Request] = []
+        def handler_literal(request: httpx.Request) -> httpx.Response:
+            received_requests_1.append(request)
+            return httpx.Response(302, headers={"Location": "http://127.0.0.1/admin"})
+
+        mock_pub_resolver = lambda h, p, t=0: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+        transport_1 = httpx.MockTransport(handler_literal)
+        res_literal = robust_ping(
+            "https://public-site.com/step1",
+            allow_loopback=False,
+            transport=transport_1,
+            dns_resolver=mock_pub_resolver,
+        )
+        self.assertEqual(res_literal.outcome, PingOutcome.UNREACHABLE)
+        self.assertEqual(res_literal.error_detail, "ssrf_blocked")
+        self.assertEqual(len(received_requests_1), 1)  # Only initial hop sent; blocked target was NOT requested
+
+        # Case 2: Redirect to hostname resolving to private IP
+        received_requests_2: list[httpx.Request] = []
+        def handler_host(request: httpx.Request) -> httpx.Response:
+            received_requests_2.append(request)
+            return httpx.Response(302, headers={"Location": "http://internal-db.local/secret"})
+
+        def multi_resolver(host: str, port: int, type: int = 0):
+            if "public" in host:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", port))]
+
+        transport_2 = httpx.MockTransport(handler_host)
+        res_host = robust_ping(
+            "https://public-site.com/step1",
+            allow_loopback=False,
+            transport=transport_2,
+            dns_resolver=multi_resolver,
+        )
+        self.assertEqual(res_host.outcome, PingOutcome.UNREACHABLE)
+        self.assertEqual(res_host.error_detail, "ssrf_blocked")
+        self.assertEqual(len(received_requests_2), 1)  # Internal host was NOT requested
+
+    def test_redirect_relative_and_loop_exhaustion(self) -> None:
+        """
+        Test (c): Relative Location redirects are followed correctly; redirect loops stop at max_redirects.
+        """
+        mock_resolver = lambda h, p, t=0: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+
+        # Relative Location redirect followed correctly
+        def relative_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/start":
+                return httpx.Response(302, headers={"Location": "/finish"})
+            elif request.url.path == "/finish":
+                return httpx.Response(200, text="Final Destination")
+            return httpx.Response(404)
+
+        transport_rel = httpx.MockTransport(relative_handler)
+        res_rel = robust_ping(
+            "https://public-site.com/start",
+            allow_loopback=False,
+            transport=transport_rel,
+            dns_resolver=mock_resolver,
+        )
+        self.assertEqual(res_rel.outcome, PingOutcome.UP)
+        self.assertEqual(res_rel.status_code, 200)
+        self.assertEqual(res_rel.final_url, "https://public-site.com/finish")
+
+        # Redirect loop stops at max_redirects
+        def loop_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, headers={"Location": "/loop"})
+
+        transport_loop = httpx.MockTransport(loop_handler)
+        res_loop = robust_ping(
+            "https://public-site.com/loop",
+            allow_loopback=False,
+            transport=transport_loop,
+            dns_resolver=mock_resolver,
+        )
+        self.assertEqual(res_loop.outcome, PingOutcome.UNREACHABLE)
+        self.assertEqual(res_loop.error_detail, "redirect_error")
+
+    def test_https_request_carries_sni_hostname(self) -> None:
+        """
+        Test (d): https request carries extensions sni_hostname == original hostname.
+        """
+        mock_resolver = lambda h, p, t=0: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+        captured_req: httpx.Request | None = None
+        def sni_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_req
+            captured_req = request
+            return httpx.Response(200, text="OK")
+
+        transport = httpx.MockTransport(sni_handler)
+        res = robust_ping(
+            "https://secure-service.example.org/health",
+            allow_loopback=False,
+            transport=transport,
+            dns_resolver=mock_resolver,
+        )
+        self.assertEqual(res.outcome, PingOutcome.UP)
+        self.assertIsNotNone(captured_req)
+        self.assertEqual(captured_req.extensions.get("sni_hostname"), "secure-service.example.org")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
