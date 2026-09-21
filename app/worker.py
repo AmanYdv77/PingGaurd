@@ -8,22 +8,13 @@ Configures the Celery distributed task queue backed by Redis:
 - Bounded soft and hard task time limits.
 """
 
-import os
-from pathlib import Path
 from celery import Celery
-from dotenv import load_dotenv
+from app.config import get_settings
 
-# Load environment variables from .env if present
-env_file = Path(__file__).resolve().parent.parent / ".env"
-if env_file.exists():
-    load_dotenv(dotenv_path=env_file)
-
-# Configurable Redis endpoints
-DEFAULT_BROKER = "redis://localhost:6379/0"
-DEFAULT_BACKEND = "redis://localhost:6379/1"
-
-REDIS_BROKER_URL = os.getenv("REDIS_BROKER_URL", DEFAULT_BROKER)
-REDIS_RESULT_BACKEND_URL = os.getenv("REDIS_RESULT_BACKEND_URL", DEFAULT_BACKEND)
+# Centralised application settings
+settings = get_settings()
+REDIS_BROKER_URL = settings.redis_broker_url
+REDIS_RESULT_BACKEND_URL = settings.redis_result_backend_url
 
 # Instantiate Celery application
 celery_app = Celery(
@@ -66,10 +57,10 @@ celery_app.conf.update(
     beat_schedule={
         "sweep-due-monitors": {
             "task": "app.tasks.sweep_due_monitors",
-            "schedule": float(os.getenv("SWEEP_INTERVAL_SECONDS", "15.0")),
+            "schedule": settings.sweep_interval_seconds,
         }
     },
-    beat_schedule_filename=os.getenv("CELERYBEAT_SCHEDULE_FILENAME", "celerybeat-schedule"),
+    beat_schedule_filename=settings.celerybeat_schedule_filename,
 )
 
 # Eagerly import task definitions to ensure immediate registration

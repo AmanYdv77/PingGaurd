@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from enum import Enum
 import ipaddress
 import logging
-import os
 import socket
 import ssl
 import time
@@ -17,6 +16,7 @@ import urllib.parse
 from typing import Any, Callable
 
 import httpx
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +57,7 @@ class PingResultDTO:
 # 2. Configuration & Default Settings
 # =============================================================================
 
-# Granular timeouts (seconds)
-DEFAULT_CONNECT_TIMEOUT = float(os.getenv("PING_CONNECT_TIMEOUT", "5.0"))
-DEFAULT_READ_TIMEOUT = float(os.getenv("PING_READ_TIMEOUT", "10.0"))
-DEFAULT_WRITE_TIMEOUT = float(os.getenv("PING_WRITE_TIMEOUT", "5.0"))
-DEFAULT_POOL_TIMEOUT = float(os.getenv("PING_POOL_TIMEOUT", "5.0"))
 
-# Maximum response body bytes to stream before closing (default 1 MB)
-DEFAULT_MAX_RESPONSE_BYTES = int(os.getenv("MAX_RESPONSE_BYTES", "1048576"))
-
-# Maximum redirect hops allowed
-DEFAULT_MAX_REDIRECTS = int(os.getenv("MAX_REDIRECTS", "5"))
-
-# User-Agents
-DEFAULT_USER_AGENT = os.getenv("PING_USER_AGENT", "PingGuard/1.0")
-DEFAULT_KEEP_ALIVE_USER_AGENT = os.getenv("KEEP_ALIVE_USER_AGENT", "PingGuard-KeepAlive/1.0")
 
 
 # =============================================================================
@@ -291,13 +277,13 @@ def is_tls_exception(exc: Exception) -> bool:
 
 async def perform_http_probe(
     url: str,
-    user_agent: str = DEFAULT_USER_AGENT,
-    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
-    read_timeout: float = DEFAULT_READ_TIMEOUT,
-    write_timeout: float = DEFAULT_WRITE_TIMEOUT,
-    pool_timeout: float = DEFAULT_POOL_TIMEOUT,
-    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
-    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    user_agent: str | None = None,
+    connect_timeout: float | None = None,
+    read_timeout: float | None = None,
+    write_timeout: float | None = None,
+    pool_timeout: float | None = None,
+    max_response_bytes: int | None = None,
+    max_redirects: int | None = None,
     allow_loopback: bool = False,
     dns_resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -340,12 +326,21 @@ async def perform_http_probe(
             final_url=None,
         )
 
-    # Step 2: Configure granular httpx timeouts
+    # Step 2: Resolve runtime configuration and configure granular timeouts
+    settings = get_settings()
+    ua = user_agent or settings.http_user_agent
+    c_timeout = connect_timeout if connect_timeout is not None else settings.http_connect_timeout
+    r_timeout = read_timeout if read_timeout is not None else settings.http_read_timeout
+    w_timeout = write_timeout if write_timeout is not None else settings.http_write_timeout
+    p_timeout = pool_timeout if pool_timeout is not None else settings.http_pool_timeout
+    max_bytes = max_response_bytes if max_response_bytes is not None else settings.http_max_response_bytes
+    max_redirs = max_redirects if max_redirects is not None else settings.http_max_redirects
+
     timeouts = httpx.Timeout(
-        connect=connect_timeout,
-        read=read_timeout,
-        write=write_timeout,
-        pool=pool_timeout,
+        connect=c_timeout,
+        read=r_timeout,
+        write=w_timeout,
+        pool=p_timeout,
     )
 
     # Step 3: Redirect SSRF Interception Hook
@@ -362,10 +357,10 @@ async def perform_http_probe(
 
     client_kwargs: dict[str, Any] = {
         "timeout": timeouts,
-        "max_redirects": max_redirects,
+        "max_redirects": max_redirs,
         "event_hooks": {"response": [redirect_ssrf_hook]},
         "headers": {
-            "User-Agent": user_agent,
+            "User-Agent": ua,
             "Accept": "*/*",
         },
         "follow_redirects": True,
@@ -387,11 +382,11 @@ async def perform_http_probe(
                 # Memory-bounded streaming: stop reading if body exceeds max_response_bytes
                 async for chunk in response.aiter_bytes():
                     bytes_read += len(chunk)
-                    if bytes_read > max_response_bytes:
+                    if bytes_read > max_bytes:
                         logger.warning(
                             "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), terminating stream early",
                             safe_url,
-                            max_response_bytes,
+                            max_bytes,
                         )
                         break
 
@@ -521,10 +516,11 @@ def robust_ping(
     Uses asyncio.run() to safely invoke the asynchronous httpx network engine.
     """
     import asyncio
+    settings = get_settings()
     return asyncio.run(
         perform_http_probe(
             url=url,
-            user_agent=DEFAULT_USER_AGENT,
+            user_agent=settings.http_user_agent,
             allow_loopback=allow_loopback,
             transport=transport,
             dns_resolver=dns_resolver,
@@ -547,11 +543,12 @@ def robust_keep_alive(
     import asyncio
     from app.tasks import safe_join_url
     target_url = safe_join_url(url, path)
+    settings = get_settings()
 
     return asyncio.run(
         perform_http_probe(
             url=target_url,
-            user_agent=DEFAULT_KEEP_ALIVE_USER_AGENT,
+            user_agent=settings.http_keep_alive_user_agent,
             allow_loopback=allow_loopback,
             transport=transport,
             dns_resolver=dns_resolver,

@@ -1,4 +1,3 @@
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -11,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from app.db import DATABASE_URL  # noqa: E402
+from app.config import get_settings  # noqa: E402
 from app.models import Base  # noqa: E402
 
 # Alembic Config object
@@ -26,15 +25,8 @@ target_metadata = Base.metadata
 
 
 def get_sync_url() -> str:
-    """Convert asyncpg DATABASE_URL to psycopg2 for synchronous Alembic migrations."""
-    db_url = os.getenv("DATABASE_URL", DATABASE_URL)
-    if "+asyncpg" in db_url:
-        return db_url.replace("+asyncpg", "+psycopg2")
-    if db_url.startswith("postgresql://") and "+psycopg2" not in db_url:
-        return db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    if db_url.startswith("postgres://") and "+psycopg2" not in db_url:
-        return db_url.replace("postgres://", "postgresql+psycopg2://", 1)
-    return db_url
+    """Return synchronous psycopg2 database URL for Alembic migrations."""
+    return get_settings().sync_database_url
 
 
 def run_migrations_offline() -> None:

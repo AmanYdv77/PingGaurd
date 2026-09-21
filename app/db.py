@@ -4,11 +4,8 @@ Database Configuration & Session Providers.
 Provides asynchronous engine/sessions for FastAPI and synchronous engine/sessions for Celery workers.
 """
 
-import os
 from contextlib import contextmanager
-from pathlib import Path
 from typing import AsyncGenerator, Generator
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -16,21 +13,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Session, sessionmaker
+from app.config import get_settings
 
-# Load environment variables from .env if present
-env_file = Path(__file__).resolve().parent.parent / ".env"
-if env_file.exists():
-    load_dotenv(dotenv_path=env_file)
-
-# Default development PostgreSQL URL
-DEFAULT_DB_URL = "postgresql+asyncpg://postgres:password@localhost:5432/pingguard"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
-
-# Ensure asyncpg driver prefix is used for SQLAlchemy async engine
-if DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+# Centralised application settings
+settings = get_settings()
+DATABASE_URL = settings.async_database_url
+SYNC_DATABASE_URL = settings.sync_database_url
 
 # Asynchronous SQLAlchemy Engine for FastAPI
 engine = create_async_engine(
@@ -71,15 +59,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # =========================================================================
 # Synchronous Database Engine & Session Provider for Celery Workers
 # =========================================================================
-
-# Translate asyncpg connection string to psycopg2 for synchronous workers
-SYNC_DATABASE_URL = DATABASE_URL
-if "+asyncpg" in SYNC_DATABASE_URL:
-    SYNC_DATABASE_URL = SYNC_DATABASE_URL.replace("+asyncpg", "+psycopg2")
-elif SYNC_DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in SYNC_DATABASE_URL:
-    SYNC_DATABASE_URL = SYNC_DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
-elif SYNC_DATABASE_URL.startswith("postgres://") and "+psycopg2" not in SYNC_DATABASE_URL:
-    SYNC_DATABASE_URL = SYNC_DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
 
 # Synchronous Engine for Celery tasks
 sync_engine = create_engine(
