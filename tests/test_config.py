@@ -246,4 +246,34 @@ def test_api_key_secret_str_safe_repr(monkeypatch):
     assert secret not in repr(settings)
 
 
+def test_cors_allowed_origins_wildcard_rejected(monkeypatch):
+    """Verify wildcard '*' origin in CORS_ALLOWED_ORIGINS is rejected with ValidationError."""
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "*")
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert "Wildcard" in str(exc_info.value) or "not allowed" in str(exc_info.value) or "not permitted" in str(exc_info.value)
+
+
+def test_cors_allowed_origins_parsing(monkeypatch):
+    """Verify comma-separated origins are parsed into a normalized list."""
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000, https://app.example.com/")
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.cors_allowed_origins == ["http://localhost:3000", "https://app.example.com"]
+
+
+def test_cors_allowed_origins_invalid_path_rejected(monkeypatch):
+    """Verify origins containing paths are rejected."""
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000/api")
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert "path" in str(exc_info.value).lower()
+
+
+
 

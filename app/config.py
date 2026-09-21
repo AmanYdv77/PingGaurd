@@ -6,7 +6,8 @@ and provides computed database connection strings for both async (FastAPI) and s
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
+import urllib.parse
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
     # 0. Environment Profile & Authentication
     environment: Literal["dev", "test", "prod"] = "dev"
     api_key: SecretStr
+    cors_allowed_origins: list[str] | str = []
 
     # 1. Database Configuration
     database_url: str
@@ -71,6 +73,53 @@ class Settings(BaseSettings):
         if val.lower() in WEAK_PASSWORDS or val.lower().startswith("change-me"):
             raise ValueError("API_KEY cannot be a known weak or placeholder value")
         return v
+
+    @field_validator("cors_allowed_origins", mode="after")
+    @classmethod
+    def parse_and_validate_cors_origins(cls, v: Any) -> list[str]:
+        """
+        Parses comma-separated string into origin list, rejects wildcards,
+        and validates that each entry is a valid http/https origin with no path.
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            raw_origins = [item.strip() for item in v.split(",") if item.strip()]
+        elif isinstance(v, (list, tuple, set)):
+            raw_origins = [str(item).strip() for item in v if str(item).strip()]
+        else:
+            raise ValueError("CORS_ALLOWED_ORIGINS must be a comma-separated string or list of origins")
+
+        validated: list[str] = []
+        for origin in raw_origins:
+            if origin in ("*", "'*'", '"*"'):
+                raise ValueError(
+                    "Wildcard origin '*' is not allowed in CORS_ALLOWED_ORIGINS. "
+                    "Specify explicit origin URLs (e.g. http://localhost:3000)."
+                )
+            clean_origin = origin.rstrip("/")
+            parsed = urllib.parse.urlsplit(clean_origin)
+            if parsed.scheme.lower() not in ("http", "https"):
+                raise ValueError(
+                    f"Invalid CORS origin scheme: '{origin}'. Only HTTP and HTTPS origins are permitted."
+                )
+            if not parsed.netloc:
+                raise ValueError(
+                    f"Invalid CORS origin: '{origin}'. Must include a host/authority (e.g. http://localhost:3000)."
+                )
+            if parsed.path:
+                raise ValueError(
+                    f"CORS origin '{origin}' must not contain a path. Specify origin only (e.g. {parsed.scheme}://{parsed.netloc})."
+                )
+            if parsed.query or parsed.fragment:
+                raise ValueError(
+                    f"CORS origin '{origin}' must not contain query parameters or fragments."
+                )
+            normalized = f"{parsed.scheme.lower()}://{parsed.netloc}"
+            if normalized not in validated:
+                validated.append(normalized)
+
+        return validated
 
     @field_validator("database_url")
     @classmethod

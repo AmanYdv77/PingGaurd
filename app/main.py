@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
+from app.config import get_settings
 from app.db import get_db
 from app.models import Monitor, PingResult
 from app.security import require_api_key
@@ -47,13 +48,16 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+settings = get_settings()
+if settings.cors_allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-API-Key"],
+        max_age=600,
+    )
 
 
 @app.get(

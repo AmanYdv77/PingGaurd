@@ -928,6 +928,73 @@ class TestApiKeyAuthentication(unittest.TestCase):
         self.assertEqual(security_schemes["APIKeyHeader"]["in"], "header")
 
 
+class TestCorsConfiguration(unittest.TestCase):
+    def test_cors_architecture_contains_no_wildcard(self) -> None:
+        """Verify app/main.py does not contain wildcard allow_origins."""
+        from pathlib import Path
+        main_py = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertNotIn('allow_origins=["*"]', main_py)
+        self.assertNotIn("allow_origins=['*']", main_py)
+
+    def test_cors_disallowed_origin_no_headers(self) -> None:
+        """A disallowed origin receives no CORS headers."""
+        client = TestClient(app)
+        resp = client.get("/health", headers={"Origin": "https://evil-unauthorized-site.com"})
+        self.assertNotIn("access-control-allow-origin", resp.headers)
+
+    def test_cors_allowed_origin_preflight_and_disallowed(self) -> None:
+        """Preflight from allowed origin returns CORS headers; disallowed origin gets none."""
+        import sys
+        import os
+        from app.config import get_settings
+
+        old_origins = os.environ.get("CORS_ALLOWED_ORIGINS")
+        os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:3000"
+        get_settings.cache_clear()
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("app.main"):
+                del sys.modules[mod]
+
+        try:
+            from app.main import app as test_app
+            client = TestClient(test_app)
+
+            # Allowed origin preflight
+            preflight = client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Content-Type, X-API-Key",
+                },
+            )
+            self.assertEqual(preflight.status_code, 200)
+            self.assertEqual(preflight.headers.get("access-control-allow-origin"), "http://localhost:3000")
+            self.assertIn("POST", preflight.headers.get("access-control-allow-methods", ""))
+            self.assertIn("X-API-Key", preflight.headers.get("access-control-allow-headers", ""))
+            self.assertEqual(preflight.headers.get("access-control-max-age"), "600")
+            self.assertNotIn("access-control-allow-credentials", preflight.headers)
+
+            # Disallowed origin
+            disallowed = client.options(
+                "/health",
+                headers={
+                    "Origin": "https://evil.com",
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+            self.assertNotIn("access-control-allow-origin", disallowed.headers)
+        finally:
+            if old_origins is not None:
+                os.environ["CORS_ALLOWED_ORIGINS"] = old_origins
+            else:
+                os.environ.pop("CORS_ALLOWED_ORIGINS", None)
+            get_settings.cache_clear()
+            for mod in list(sys.modules.keys()):
+                if mod.startswith("app.main"):
+                    del sys.modules[mod]
+
+
 if __name__ == "__main__":
     unittest.main()
 
