@@ -7,7 +7,7 @@ and provides computed database connection strings for both async (FastAPI) and s
 
 from functools import lru_cache
 from typing import Literal
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -31,8 +31,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 0. Environment Profile
+    # 0. Environment Profile & Authentication
     environment: Literal["dev", "test", "prod"] = "dev"
+    api_key: SecretStr
 
     # 1. Database Configuration
     database_url: str
@@ -59,6 +60,17 @@ class Settings(BaseSettings):
     probe_total_timeout_seconds: float = 8.0
     celery_soft_time_limit: int = 10
     celery_hard_time_limit: int = 15
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v: SecretStr) -> SecretStr:
+        """Validate that api_key is at least 24 characters and not a weak placeholder."""
+        val = v.get_secret_value()
+        if len(val) < 24:
+            raise ValueError("API_KEY must be at least 24 characters in length")
+        if val.lower() in WEAK_PASSWORDS or val.lower().startswith("change-me"):
+            raise ValueError("API_KEY cannot be a known weak or placeholder value")
+        return v
 
     @field_validator("database_url")
     @classmethod

@@ -16,6 +16,7 @@ from app.db import DATABASE_URL, get_db
 from app.main import app
 from app.models import Monitor, PingResult
 from app.schemas import MonitorMode, MonitorStatus
+from tests.conftest import TEST_API_KEY
 
 # Use NullPool for tests so each request in TestClient gets a connection on its current event loop
 test_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
@@ -58,7 +59,7 @@ class TestPingGuardAPI(unittest.TestCase):
         cur.close()
         conn.close()
 
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers={"X-API-Key": TEST_API_KEY})
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
@@ -590,7 +591,7 @@ class TestPingGuardAPI(unittest.TestCase):
 
         from app.main import app as restarted_app
         restarted_app.dependency_overrides[get_db] = override_get_db
-        restarted_client = TestClient(restarted_app)
+        restarted_client = TestClient(restarted_app, headers={"X-API-Key": TEST_API_KEY})
 
         # 3. Retrieve from new application instance
         res2 = restarted_client.get(f"/monitors/{mid}")
@@ -886,6 +887,45 @@ class TestPingGuardAPI(unittest.TestCase):
             [],
             f"app/main.py must not reference outbound probing or run_in_executor. Found: {violations}"
         )
+
+
+class TestApiKeyAuthentication(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_unauthenticated_request_rejected(self) -> None:
+        """Missing X-API-Key header returns HTTP 401 with WWW-Authenticate header."""
+        resp = self.client.get("/monitors/")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"detail": "invalid or missing API key"})
+        self.assertEqual(resp.headers.get("www-authenticate"), "ApiKey")
+
+    def test_invalid_api_key_rejected(self) -> None:
+        """Wrong X-API-Key header returns HTTP 401 with WWW-Authenticate header."""
+        resp = self.client.get("/monitors/", headers={"X-API-Key": "wrong-key-value-1234567890"})
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json(), {"detail": "invalid or missing API key"})
+        self.assertEqual(resp.headers.get("www-authenticate"), "ApiKey")
+
+    def test_health_check_remains_unauthenticated(self) -> None:
+        """GET /health remains public and succeeds without X-API-Key."""
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_valid_api_key_accepted(self) -> None:
+        """Valid X-API-Key header grants access to /monitors/ endpoints."""
+        resp = self.client.get("/monitors/", headers={"X-API-Key": TEST_API_KEY})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_openapi_declares_security_scheme(self) -> None:
+        """Verify the OpenAPI schema declares APIKeyHeader security scheme."""
+        openapi_schema = app.openapi()
+        components = openapi_schema.get("components", {})
+        security_schemes = components.get("securitySchemes", {})
+        self.assertIn("APIKeyHeader", security_schemes)
+        self.assertEqual(security_schemes["APIKeyHeader"]["type"], "apiKey")
+        self.assertEqual(security_schemes["APIKeyHeader"]["name"], "X-API-Key")
+        self.assertEqual(security_schemes["APIKeyHeader"]["in"], "header")
 
 
 if __name__ == "__main__":

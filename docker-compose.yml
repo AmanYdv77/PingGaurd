@@ -89,6 +89,7 @@ services:
       - HTTP_POOL_TIMEOUT=${HTTP_POOL_TIMEOUT:-2.0}
       - HTTP_MAX_RESPONSE_BYTES=${HTTP_MAX_RESPONSE_BYTES:-1048576}
       - HTTP_MAX_REDIRECTS=${HTTP_MAX_REDIRECTS:-5}
+      - API_KEY=${API_KEY:?Set API_KEY in .env}
     depends_on:
       db:
         condition: service_healthy
@@ -128,6 +129,7 @@ services:
       - HTTP_POOL_TIMEOUT=${HTTP_POOL_TIMEOUT:-2.0}
       - HTTP_MAX_RESPONSE_BYTES=${HTTP_MAX_RESPONSE_BYTES:-1048576}
       - HTTP_MAX_REDIRECTS=${HTTP_MAX_REDIRECTS:-5}
+      - API_KEY=${API_KEY:?Set API_KEY in .env}
     depends_on:
       db:
         condition: service_healthy
@@ -160,6 +162,7 @@ services:
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
       - SWEEP_INTERVAL_SECONDS=${SWEEP_INTERVAL_SECONDS:-15.0}
+      - API_KEY=${API_KEY:?Set API_KEY in .env}
     depends_on:
       db:
         condition: service_healthy

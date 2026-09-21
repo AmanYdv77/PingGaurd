@@ -42,9 +42,12 @@ normalized_db_url = test_db_url
 if "@localhost:" in normalized_db_url:
     normalized_db_url = normalized_db_url.replace("@localhost:", "@127.0.0.1:")
 
+TEST_API_KEY = "test-static-api-key-at-least-24-chars-long"
+
 # Only after guard passes, point DATABASE_URL to normalized TEST_DATABASE_URL
 os.environ["DATABASE_URL"] = normalized_db_url
 os.environ["ENVIRONMENT"] = "test"
+os.environ["API_KEY"] = TEST_API_KEY
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -54,3 +57,13 @@ def run_migrations():
     ini_path = project_root / "alembic.ini"
     alembic_cfg = Config(str(ini_path))
     command.upgrade(alembic_cfg, "head")
+
+
+@pytest.fixture
+def auth_client():
+    """FastAPI TestClient pre-configured with the valid X-API-Key header."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as client:
+        yield client
+

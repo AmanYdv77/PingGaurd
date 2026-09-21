@@ -204,3 +204,46 @@ def test_celery_hard_time_limit_too_low_raises():
     assert "celery_hard_time_limit" in str(exc_info.value)
 
 
+def test_api_key_required(monkeypatch):
+    """Verify omitting API_KEY raises ValidationError."""
+    monkeypatch.delenv("API_KEY", raising=False)
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert "api_key" in str(exc_info.value)
+
+
+def test_api_key_min_length(monkeypatch):
+    """Verify API_KEY shorter than 24 characters raises ValidationError."""
+    monkeypatch.setenv("API_KEY", "too-short-1234567890")
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert "at least 24 characters" in str(exc_info.value)
+
+
+def test_api_key_weak_value_rejected(monkeypatch):
+    """Verify known weak/placeholder API keys are rejected with ValidationError."""
+    monkeypatch.setenv("API_KEY", "change-me-generate-a-random-one")
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert "weak or placeholder value" in str(exc_info.value)
+
+
+def test_api_key_secret_str_safe_repr(monkeypatch):
+    """Verify API key is wrapped in SecretStr and never leaks in repr or str."""
+    secret = "a" * 32
+    monkeypatch.setenv("API_KEY", secret)
+    from app.config import Settings
+
+    settings = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert settings.api_key.get_secret_value() == secret
+    assert secret not in str(settings.api_key)
+    assert secret not in repr(settings)
+
+
+

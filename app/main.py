@@ -9,7 +9,7 @@ monitor registration, retrieval, update, listing, and on-demand checks.
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated
-from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import __version__
 from app.db import get_db
 from app.models import Monitor, PingResult
+from app.security import require_api_key
 from app.tasks import execute_ping
 from app.schemas import (
     MonitorCheckResponse,
@@ -70,11 +71,17 @@ async def health_check() -> dict[str, str]:
     }
 
 
-@app.post(
-    "/monitors/",
+router = APIRouter(
+    prefix="/monitors",
+    tags=["Monitors"],
+    dependencies=[Depends(require_api_key)],
+)
+
+
+@router.post(
+    "/",
     response_model=MonitorRead,
     status_code=status.HTTP_201_CREATED,
-    tags=["Monitors"],
     summary="Create a new monitor",
     description=(
         "Validates and persists a new monitor endpoint in PostgreSQL with optional keep-alive settings. "
@@ -114,10 +121,9 @@ async def create_monitor(
     return monitor
 
 
-@app.get(
-    "/monitors/{monitor_id}",
+@router.get(
+    "/{monitor_id}",
     response_model=MonitorRead,
-    tags=["Monitors"],
     summary="Get monitor by ID",
     description="Retrieves configuration, status, and keep-alive settings for a single monitor from PostgreSQL.",
 )
@@ -139,17 +145,15 @@ async def get_monitor(
     return monitor
 
 
-@app.patch(
-    "/monitors/{monitor_id}",
+@router.patch(
+    "/{monitor_id}",
     response_model=MonitorRead,
-    tags=["Monitors"],
     summary="Update monitor (Partial)",
     description="Partially updates an existing monitor's name, check interval, or keep-alive configuration in PostgreSQL.",
 )
-@app.put(
-    "/monitors/{monitor_id}",
+@router.put(
+    "/{monitor_id}",
     response_model=MonitorRead,
-    tags=["Monitors"],
     summary="Update monitor",
     description="Updates an existing monitor's configuration, including keep-alive parameters in PostgreSQL.",
 )
@@ -216,10 +220,9 @@ async def update_monitor(
     return monitor
 
 
-@app.get(
-    "/monitors/",
+@router.get(
+    "/",
     response_model=list[MonitorRead],
-    tags=["Monitors"],
     summary="List all monitors",
     description="Retrieves a paginated list of registered monitors from PostgreSQL.",
 )
@@ -238,10 +241,9 @@ async def list_monitors(
     return list(result.scalars().all())
 
 
-@app.delete(
-    "/monitors/{monitor_id}",
+@router.delete(
+    "/{monitor_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    tags=["Monitors"],
     summary="Delete monitor",
     description="Deletes an existing monitor and all associated probe results (CASCADE).",
 )
@@ -263,10 +265,9 @@ async def delete_monitor(
     return None
 
 
-@app.get(
-    "/monitors/{monitor_id}/results",
+@router.get(
+    "/{monitor_id}/results",
     response_model=list[PingResultRead],
-    tags=["Monitors"],
     summary="Get monitor probe results",
     description="Retrieves historical probe and keep-alive results for a monitor, ordered most recent first.",
 )
@@ -293,11 +294,10 @@ async def get_monitor_results(
     return list(res.scalars().all())
 
 
-@app.post(
-    "/monitors/{monitor_id}/check",
+@router.post(
+    "/{monitor_id}/check",
     response_model=MonitorCheckResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    tags=["Monitors"],
     summary="Queue on-demand probe check (results appear via GET /monitors/{id}/results)",
     description=(
         "Enqueues an immediate health probe task for the specified monitor to Celery workers. "
@@ -323,3 +323,7 @@ async def trigger_monitor_check(
 
     execute_ping.delay(monitor.id)
     return MonitorCheckResponse(status="queued", monitor_id=monitor.id)
+
+
+app.include_router(router)
+
