@@ -5,6 +5,7 @@ Provides an observable network execution layer with timeouts, SSRF defense,
 streaming response bounds, monotonic latency tracking, and structured outcome classification.
 """
 
+import asyncio
 from dataclasses import dataclass
 from enum import Enum
 import ipaddress
@@ -41,7 +42,7 @@ class PingResultDTO:
         outcome: Tagged classification (UP, DEGRADED, DOWN, UNREACHABLE).
         status_code: HTTP response code if target responded, else None.
         latency_ms: Round-trip duration in milliseconds (monotonic).
-        error_detail: Concise, stable error identifier (e.g. 'connect_timeout', 'ssrf_blocked').
+        error_detail: Concise, stable error identifier (e.g. 'connect_timeout', 'read_timeout', 'total_timeout', 'ssrf_blocked').
         original_url: Target URL provided for evaluation.
         final_url: Effective destination URL after following redirects.
     """
@@ -287,214 +288,231 @@ async def perform_http_probe(
     allow_loopback: bool = False,
     dns_resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    total_timeout: float | None = None,
 ) -> PingResultDTO:
     """
     Executes an asynchronous HTTP GET probe against the target URL.
     
-    Enforces SSRF defense, granular timeouts, streaming memory limits,
-    and redirect interception.
+    Enforces SSRF defense, granular timeouts, total deadline timeout,
+    streaming memory limits, and redirect interception.
     """
+    settings = get_settings()
+    effective_total_timeout = total_timeout if total_timeout is not None else settings.probe_total_timeout_seconds
+
     safe_url = redact_url_credentials(url)
     start_mono = time.monotonic()
 
-    # Step 1: Pre-request SSRF & DNS validation
     try:
-        resolve_and_validate_target(
-            url,
-            allow_loopback=allow_loopback,
-            dns_resolver=dns_resolver,
-        )
-    except SSRFBlockedError as exc:
-        logger.warning("Target rejected by SSRF defense: %s (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=None,
-            error_detail="ssrf_blocked",
-            original_url=url,
-            final_url=None,
-        )
-    except DNSResolutionError as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        logger.warning("Target DNS resolution failed: %s (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail="dns_error",
-            original_url=url,
-            final_url=None,
-        )
-
-    # Step 2: Resolve runtime configuration and configure granular timeouts
-    settings = get_settings()
-    ua = user_agent or settings.http_user_agent
-    c_timeout = connect_timeout if connect_timeout is not None else settings.http_connect_timeout
-    r_timeout = read_timeout if read_timeout is not None else settings.http_read_timeout
-    w_timeout = write_timeout if write_timeout is not None else settings.http_write_timeout
-    p_timeout = pool_timeout if pool_timeout is not None else settings.http_pool_timeout
-    max_bytes = max_response_bytes if max_response_bytes is not None else settings.http_max_response_bytes
-    max_redirs = max_redirects if max_redirects is not None else settings.http_max_redirects
-
-    timeouts = httpx.Timeout(
-        connect=c_timeout,
-        read=r_timeout,
-        write=w_timeout,
-        pool=p_timeout,
-    )
-
-    # Step 3: Redirect SSRF Interception Hook
-    async def redirect_ssrf_hook(response: httpx.Response) -> None:
-        if response.is_redirect:
-            location = response.headers.get("Location")
-            if location:
-                dest_url = str(response.url.join(location))
+        async with asyncio.timeout(effective_total_timeout):
+            # Step 1: Pre-request SSRF & DNS validation
+            try:
                 resolve_and_validate_target(
-                    dest_url,
-                    allow_loopback=False,  # Redirects must NEVER target loopback, private, or cloud metadata
+                    url,
+                    allow_loopback=allow_loopback,
                     dns_resolver=dns_resolver,
                 )
+            except SSRFBlockedError as exc:
+                logger.warning("Target rejected by SSRF defense: %s (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=None,
+                    error_detail="ssrf_blocked",
+                    original_url=url,
+                    final_url=None,
+                )
+            except DNSResolutionError as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                logger.warning("Target DNS resolution failed: %s (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail="dns_error",
+                    original_url=url,
+                    final_url=None,
+                )
 
-    client_kwargs: dict[str, Any] = {
-        "timeout": timeouts,
-        "max_redirects": max_redirs,
-        "event_hooks": {"response": [redirect_ssrf_hook]},
-        "headers": {
-            "User-Agent": ua,
-            "Accept": "*/*",
-        },
-        "follow_redirects": True,
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
+            # Step 2: Resolve runtime configuration and configure granular timeouts
+            ua = user_agent or settings.http_user_agent
+            c_timeout = connect_timeout if connect_timeout is not None else settings.http_connect_timeout
+            r_timeout = read_timeout if read_timeout is not None else settings.http_read_timeout
+            w_timeout = write_timeout if write_timeout is not None else settings.http_write_timeout
+            p_timeout = pool_timeout if pool_timeout is not None else settings.http_pool_timeout
+            max_bytes = max_response_bytes if max_response_bytes is not None else settings.http_max_response_bytes
+            max_redirs = max_redirects if max_redirects is not None else settings.http_max_redirects
 
-    # Step 4: Execute HTTP probe with bounded streaming
-    status_code: int | None = None
-    final_url: str | None = None
-    bytes_read = 0
+            timeouts = httpx.Timeout(
+                connect=c_timeout,
+                read=r_timeout,
+                write=w_timeout,
+                pool=p_timeout,
+            )
 
-    try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            async with client.stream("GET", url) as response:
-                status_code = response.status_code
-                final_url = str(response.url)
-
-                # Memory-bounded streaming: stop reading if body exceeds max_response_bytes
-                async for chunk in response.aiter_bytes():
-                    bytes_read += len(chunk)
-                    if bytes_read > max_bytes:
-                        logger.warning(
-                            "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), terminating stream early",
-                            safe_url,
-                            max_bytes,
+            # Step 3: Redirect SSRF Interception Hook
+            async def redirect_ssrf_hook(response: httpx.Response) -> None:
+                if response.is_redirect:
+                    location = response.headers.get("Location")
+                    if location:
+                        dest_url = str(response.url.join(location))
+                        resolve_and_validate_target(
+                            dest_url,
+                            allow_loopback=False,  # Redirects must NEVER target loopback, private, or cloud metadata
+                            dns_resolver=dns_resolver,
                         )
-                        break
 
-        latency_ms = round((time.monotonic() - start_mono) * 1000, 2)
+            client_kwargs: dict[str, Any] = {
+                "timeout": timeouts,
+                "max_redirects": max_redirs,
+                "event_hooks": {"response": [redirect_ssrf_hook]},
+                "headers": {
+                    "User-Agent": ua,
+                    "Accept": "*/*",
+                },
+                "follow_redirects": True,
+            }
+            if transport is not None:
+                client_kwargs["transport"] = transport
 
-        # Step 5: Status code classification
-        if 200 <= status_code < 400:
-            outcome = PingOutcome.UP
-        elif 400 <= status_code < 500:
-            outcome = PingOutcome.DEGRADED
-        else:
-            outcome = PingOutcome.DOWN
+            # Step 4: Execute HTTP probe with bounded streaming
+            status_code: int | None = None
+            final_url: str | None = None
+            bytes_read = 0
 
-        return PingResultDTO(
-            outcome=outcome,
-            status_code=status_code,
-            latency_ms=latency_ms,
-            error_detail=None,
-            original_url=url,
-            final_url=final_url,
-        )
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    async with client.stream("GET", url) as response:
+                        status_code = response.status_code
+                        final_url = str(response.url)
 
-    except SSRFBlockedError as exc:
-        logger.warning("SSRF blocked during redirect for '%s': %s", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=None,
-            error_detail="ssrf_blocked",
-            original_url=url,
-            final_url=None,
-        )
+                        # Memory-bounded streaming: stop reading if body exceeds max_response_bytes
+                        async for chunk in response.aiter_bytes():
+                            bytes_read += len(chunk)
+                            if bytes_read > max_bytes:
+                                logger.warning(
+                                    "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), terminating stream early",
+                                    safe_url,
+                                    max_bytes,
+                                )
+                                break
 
-    except httpx.ConnectTimeout as exc:
+                latency_ms = round((time.monotonic() - start_mono) * 1000, 2)
+
+                # Step 5: Status code classification
+                if 200 <= status_code < 400:
+                    outcome = PingOutcome.UP
+                elif 400 <= status_code < 500:
+                    outcome = PingOutcome.DEGRADED
+                else:
+                    outcome = PingOutcome.DOWN
+
+                return PingResultDTO(
+                    outcome=outcome,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    error_detail=None,
+                    original_url=url,
+                    final_url=final_url,
+                )
+
+            except SSRFBlockedError as exc:
+                logger.warning("SSRF blocked during redirect for '%s': %s", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=None,
+                    error_detail="ssrf_blocked",
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except httpx.ConnectTimeout as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                logger.info("Connect timeout on '%s' (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail="connect_timeout",
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except httpx.ReadTimeout as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                logger.info("Read timeout on '%s' (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail="read_timeout",
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except (httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                error_name = "write_timeout" if isinstance(exc, httpx.WriteTimeout) else "pool_timeout"
+                logger.info("%s on '%s' (%s)", error_name, safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail=error_name,
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except httpx.TooManyRedirects as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                logger.info("Too many redirects on '%s' (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail="redirect_error",
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except httpx.ConnectError as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                if is_tls_exception(exc):
+                    logger.info("TLS certificate error on '%s' (%s)", safe_url, exc)
+                    err = "tls_error"
+                else:
+                    logger.info("Connection failed on '%s' (%s)", safe_url, exc)
+                    err = "connect_error"
+
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail=err,
+                    original_url=url,
+                    final_url=None,
+                )
+
+            except httpx.RequestError as exc:
+                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                logger.info("HTTP request error on '%s' (%s)", safe_url, exc)
+                return PingResultDTO(
+                    outcome=PingOutcome.UNREACHABLE,
+                    status_code=None,
+                    latency_ms=elapsed_ms,
+                    error_detail="request_error",
+                    original_url=url,
+                    final_url=None,
+                )
+
+    except TimeoutError as exc:
         elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        logger.info("Connect timeout on '%s' (%s)", safe_url, exc)
+        logger.info("Total probe deadline exceeded for '%s' (%s)", safe_url, exc)
         return PingResultDTO(
             outcome=PingOutcome.UNREACHABLE,
             status_code=None,
             latency_ms=elapsed_ms,
-            error_detail="connect_timeout",
-            original_url=url,
-            final_url=None,
-        )
-
-    except httpx.ReadTimeout as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        logger.info("Read timeout on '%s' (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail="read_timeout",
-            original_url=url,
-            final_url=None,
-        )
-
-    except (httpx.WriteTimeout, httpx.PoolTimeout) as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        error_name = "write_timeout" if isinstance(exc, httpx.WriteTimeout) else "pool_timeout"
-        logger.info("%s on '%s' (%s)", error_name, safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail=error_name,
-            original_url=url,
-            final_url=None,
-        )
-
-    except httpx.TooManyRedirects as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        logger.info("Too many redirects on '%s' (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail="redirect_error",
-            original_url=url,
-            final_url=None,
-        )
-
-    except httpx.ConnectError as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        if is_tls_exception(exc):
-            logger.info("TLS certificate error on '%s' (%s)", safe_url, exc)
-            err = "tls_error"
-        else:
-            logger.info("Connection failed on '%s' (%s)", safe_url, exc)
-            err = "connect_error"
-
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail=err,
-            original_url=url,
-            final_url=None,
-        )
-
-    except httpx.RequestError as exc:
-        elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-        logger.info("HTTP request error on '%s' (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail="request_error",
+            error_detail="total_timeout",
             original_url=url,
             final_url=None,
         )
@@ -509,13 +527,13 @@ def robust_ping(
     allow_loopback: bool = False,
     transport: httpx.AsyncBaseTransport | None = None,
     dns_resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
+    total_timeout: float | None = None,
 ) -> PingResultDTO:
     """
     Synchronous bridge for Celery workers to execute an uptime health probe.
     
     Uses asyncio.run() to safely invoke the asynchronous httpx network engine.
     """
-    import asyncio
     settings = get_settings()
     return asyncio.run(
         perform_http_probe(
@@ -524,6 +542,7 @@ def robust_ping(
             allow_loopback=allow_loopback,
             transport=transport,
             dns_resolver=dns_resolver,
+            total_timeout=total_timeout,
         )
     )
 
@@ -534,13 +553,13 @@ def robust_keep_alive(
     allow_loopback: bool = False,
     transport: httpx.AsyncBaseTransport | None = None,
     dns_resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
+    total_timeout: float | None = None,
 ) -> PingResultDTO:
     """
     Synchronous bridge for Celery workers to execute a Keep-Alive activity ping.
     
     Safely joins url + path and executes using the Keep-Alive User-Agent.
     """
-    import asyncio
     from app.tasks import safe_join_url
     target_url = safe_join_url(url, path)
     settings = get_settings()
@@ -552,5 +571,6 @@ def robust_keep_alive(
             allow_loopback=allow_loopback,
             transport=transport,
             dns_resolver=dns_resolver,
+            total_timeout=total_timeout,
         )
     )

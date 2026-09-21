@@ -42,8 +42,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     
     # Task execution timeouts (seconds)
-    task_soft_time_limit=10,
-    task_time_limit=15,
+    task_soft_time_limit=settings.celery_soft_time_limit,
+    task_time_limit=settings.celery_hard_time_limit,
     
     # Prevent Redis result backend unbounded memory accumulation
     result_expires=3600,
