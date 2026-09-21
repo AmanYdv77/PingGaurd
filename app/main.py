@@ -17,6 +17,7 @@ from app import __version__
 from app.db import get_db
 from app.models import Monitor, PingResult
 from app.net import robust_ping
+from app.status import outcome_to_status
 from app.schemas import (
     MonitorCreate,
     MonitorMode,
@@ -344,7 +345,7 @@ async def trigger_monitor_check(
     
     now = datetime.now(timezone.utc)
     monitor.last_checked_at = now
-    monitor.status = result.outcome.value
+    monitor.status = outcome_to_status(result.outcome).value
     
     ping_result = PingResult(
         monitor_id=monitor.id,
