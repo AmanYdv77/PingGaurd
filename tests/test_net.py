@@ -3,6 +3,7 @@ Automated Test Suite for Network Resilience and SSRF Probing Engine.
 """
 
 import asyncio
+import os
 import socket
 import ssl
 import unittest
@@ -195,11 +196,17 @@ class TestNetworkResilience(unittest.TestCase):
 
         transport = httpx.MockTransport(huge_handler)
 
-        # Set limit to 10 KB
-        with patch("app.net.DEFAULT_MAX_RESPONSE_BYTES", 10 * 1024):
-            result = robust_ping("https://example.com/huge", allow_loopback=True, transport=transport)
-            self.assertEqual(result.outcome, PingOutcome.UP)
-            self.assertEqual(result.status_code, 200)
+        # Set limit to 10 KB via environment configuration
+        from app.config import get_settings
+
+        with patch.dict(os.environ, {"HTTP_MAX_RESPONSE_BYTES": str(10 * 1024)}):
+            get_settings.cache_clear()
+            try:
+                result = robust_ping("https://example.com/huge", allow_loopback=True, transport=transport)
+                self.assertEqual(result.outcome, PingOutcome.UP)
+                self.assertEqual(result.status_code, 200)
+            finally:
+                get_settings.cache_clear()
 
     # =========================================================================
     # 6. TLS / SSL Error Classification
