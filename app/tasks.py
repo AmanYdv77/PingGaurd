@@ -22,6 +22,7 @@ from app.net import (
     robust_ping,
 )
 from app.schemas import MonitorMode, MonitorStatus
+from app.status import outcome_to_status
 from app.worker import celery_app
 
 logger = logging.getLogger(__name__)
@@ -96,13 +97,8 @@ def execute_ping(self, monitor_id: int) -> dict[str, Any]:
         # Execute network probe via shared network engine
         dto = robust_ping(monitor.url)
 
-        # Map PingOutcome to Monitor.status
-        if dto.outcome == PingOutcome.UP:
-            monitor.status = MonitorStatus.UP.value
-        elif dto.outcome == PingOutcome.DEGRADED:
-            monitor.status = MonitorStatus.DEGRADED.value
-        else:
-            monitor.status = MonitorStatus.DOWN.value
+        # Map PingOutcome to Monitor.status via centralised mapping
+        monitor.status = outcome_to_status(dto.outcome).value
 
         # Update monitor telemetry timestamp
         monitor.last_checked_at = now

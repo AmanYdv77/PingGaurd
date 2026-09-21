@@ -7,6 +7,7 @@ Defines the relational schema for Monitor configurations and PingResult logs.
 from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -58,6 +59,17 @@ class Monitor(Base):
         passive_deletes=True,
     )
 
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('up', 'degraded', 'down', 'pending')",
+            name="ck_monitors_status",
+        ),
+        CheckConstraint(
+            "mode IN ('monitor', 'keep_alive', 'monitor_and_keep_alive')",
+            name="ck_monitors_mode",
+        ),
+    )
+
 
 class PingResult(Base):
     """
@@ -96,4 +108,8 @@ class PingResult(Base):
 
     __table_args__ = (
         Index("idx_ping_results_monitor_checked", "monitor_id", "checked_at"),
+        CheckConstraint(
+            "check_type IN ('monitor', 'keep_alive')",
+            name="ck_ping_results_check_type",
+        ),
     )

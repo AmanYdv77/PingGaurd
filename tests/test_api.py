@@ -765,6 +765,57 @@ class TestPingGuardAPI(unittest.TestCase):
         self.assertEqual(app.__version__, declared_version)
         self.assertEqual(app.__version__, "1.0.0")
 
+    def test_check_unreachable_status_does_not_break_list_monitors(self):
+        """
+        REGRESSION TEST:
+        1. Create monitor with unreachable/dead URL.
+        2. Call POST /monitors/{id}/check which returns PingResult.
+        3. Verify GET /monitors/ and GET /monitors/{id} return 200 OK and valid status (not 500).
+        """
+        create_resp = self.client.post("/monitors/", json={
+            "name": "Dead Host Monitor",
+            "url": "https://nonexistent-fake-target-domain-999.xyz",
+            "check_interval_seconds": 60,
+        })
+        self.assertEqual(create_resp.status_code, 201)
+        mid = create_resp.json()["id"]
+
+        # 2. Trigger on-demand check
+        check_resp = self.client.post(f"/monitors/{mid}/check")
+        self.assertEqual(check_resp.status_code, 200)
+
+        # 3. GET /monitors/{id} and GET /monitors/ must return 200 OK with valid MonitorStatus
+        get_one = self.client.get(f"/monitors/{mid}")
+        self.assertEqual(get_one.status_code, 200)
+        self.assertEqual(get_one.json()["status"], "down")
+
+        get_all = self.client.get("/monitors/")
+        self.assertEqual(get_all.status_code, 200)
+        statuses = [m["status"] for m in get_all.json() if m["id"] == mid]
+        self.assertEqual(statuses, ["down"])
+
+    def test_unreachable_status_db_constraint_rejected(self):
+        """Verify inserting status='unreachable' directly into monitors table violates DB CHECK constraint."""
+        import asyncio
+        from sqlalchemy.exc import IntegrityError
+        from app.models import Monitor
+
+        async def _attempt_invalid_insert():
+            async with AsyncSession(test_engine) as session:
+                monitor = Monitor(
+                    name="Invalid Status Target",
+                    url="https://invalid-status.example.com",
+                    check_interval_seconds=60,
+                    status="unreachable",
+                )
+                session.add(monitor)
+                await session.commit()
+
+        with self.assertRaises(IntegrityError):
+            asyncio.run(_attempt_invalid_insert())
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
