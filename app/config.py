@@ -6,9 +6,20 @@ and provides computed database connection strings for both async (FastAPI) and s
 """
 
 from functools import lru_cache
-from pydantic import field_validator
+from typing import Literal
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
+
+WEAK_PASSWORDS = {
+    "password",
+    "postgres",
+    "admin",
+    "root",
+    "123456",
+    "change-me",
+    "change-me-generate-a-random-one",
+}
 
 
 class Settings(BaseSettings):
@@ -19,6 +30,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # 0. Environment Profile
+    environment: Literal["dev", "test", "prod"] = "dev"
 
     # 1. Database Configuration
     database_url: str
@@ -84,6 +98,19 @@ class Settings(BaseSettings):
         if not (0 <= v <= 20):
             raise ValueError("http_max_redirects must be between 0 and 20")
         return v
+
+    @model_validator(mode="after")
+    def validate_db_password(self) -> "Settings":
+        """Reject default or weak database passwords when environment is prod."""
+        if self.environment == "prod":
+            url = make_url(self.database_url)
+            pwd = url.password
+            if not pwd or pwd.lower() in WEAK_PASSWORDS or pwd.lower().startswith("change-me"):
+                raise ValueError(
+                    f"Production environment rejects default or weak database password: '{pwd}'. "
+                    "Set a strong random password in .env."
+                )
+        return self
 
     @property
     def async_database_url(self) -> str:

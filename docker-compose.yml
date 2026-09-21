@@ -22,13 +22,13 @@ services:
     container_name: pingguard_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-pingguard}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-pingguard}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB:-pingguard}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -79,7 +79,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-pingguard}
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
       - SWEEP_INTERVAL_SECONDS=${SWEEP_INTERVAL_SECONDS:-15.0}
@@ -119,7 +119,7 @@ services:
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-pingguard}
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
       - HTTP_CONNECT_TIMEOUT=${HTTP_CONNECT_TIMEOUT:-2.0}
@@ -156,7 +156,7 @@ services:
     restart: unless-stopped
     command: celery -A app.worker.celery_app beat --loglevel=info
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-pingguard}
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_RESULT_BACKEND_URL=redis://redis:6379/1
       - SWEEP_INTERVAL_SECONDS=${SWEEP_INTERVAL_SECONDS:-15.0}
@@ -189,7 +189,7 @@ services:
     profiles: ["tools"]
     command: alembic upgrade head
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-pingguard}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-pingguard}
     depends_on:
       db:
         condition: service_healthy

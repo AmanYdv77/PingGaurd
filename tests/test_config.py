@@ -123,3 +123,43 @@ def test_get_settings_cached(monkeypatch):
     s1 = get_settings()
     s2 = get_settings()
     assert s1 is s2
+
+
+@pytest.mark.parametrize(
+    "weak_url",
+    [
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:password@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:admin@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:root@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:123456@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:change-me-generate-a-random-one@localhost:5432/pingguard",
+        "postgresql+asyncpg://postgres:@localhost:5432/pingguard",
+    ],
+)
+def test_weak_passwords_rejected_in_prod(weak_url):
+    """Verify production environment refuses known weak or placeholder passwords."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(database_url=weak_url, environment="prod")
+    assert "password" in str(exc_info.value).lower()
+
+
+def test_strong_password_allowed_in_prod():
+    """Verify production environment accepts strong, random database passwords."""
+    from app.config import Settings
+
+    strong_url = "postgresql+asyncpg://postgres:A9k_L2x0m-Pq8vY_Z4w7R1s9_X2j5@localhost:5432/pingguard"
+    settings = Settings(database_url=strong_url, environment="prod")
+    assert settings.environment == "prod"
+
+
+def test_weak_passwords_allowed_in_test_environment():
+    """Verify test environment allows local test database passwords (e.g. testpass)."""
+    from app.config import Settings
+
+    test_url = "postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    settings = Settings(database_url=test_url, environment="test")
+    assert settings.environment == "test"
+

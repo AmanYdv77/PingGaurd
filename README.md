@@ -231,6 +231,14 @@ Chapter 6 packages the complete PingGuard architecture into an orchestrated, mul
 
 ### 2. Docker Compose Commands
 
+#### Step 0: Configure Environment & Secrets
+Copy the environment template, generate a cryptographically random secret, and set `POSTGRES_PASSWORD`:
+```bash
+cp .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(24))"
+```
+Edit `.env` to configure your generated `POSTGRES_PASSWORD` and matching `DATABASE_URL`.
+
 #### Step 1: Run One-Shot Database Migrations
 Migrations must NOT run concurrently from every replica on container startup:
 ```bash

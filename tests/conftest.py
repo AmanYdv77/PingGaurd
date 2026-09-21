@@ -44,6 +44,7 @@ if "@localhost:" in normalized_db_url:
 
 # Only after guard passes, point DATABASE_URL to normalized TEST_DATABASE_URL
 os.environ["DATABASE_URL"] = normalized_db_url
+os.environ["ENVIRONMENT"] = "test"
 
 
 @pytest.fixture(scope="session", autouse=True)
