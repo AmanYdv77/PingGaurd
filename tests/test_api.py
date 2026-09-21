@@ -780,9 +780,15 @@ class TestPingGuardAPI(unittest.TestCase):
         self.assertEqual(create_resp.status_code, 201)
         mid = create_resp.json()["id"]
 
-        # 2. Trigger on-demand check
-        check_resp = self.client.post(f"/monitors/{mid}/check")
-        self.assertEqual(check_resp.status_code, 200)
+        # 2. Trigger on-demand check (returns 202 Accepted, queues Celery task)
+        from app.tasks import execute_ping
+        with patch("app.main.execute_ping.delay") as mock_delay:
+            check_resp = self.client.post(f"/monitors/{mid}/check")
+            self.assertEqual(check_resp.status_code, 202)
+            mock_delay.assert_called_once_with(mid)
+
+        # Run the queued worker task
+        execute_ping(mid)
 
         # 3. GET /monitors/{id} and GET /monitors/ must return 200 OK with valid MonitorStatus
         get_one = self.client.get(f"/monitors/{mid}")
@@ -813,6 +819,73 @@ class TestPingGuardAPI(unittest.TestCase):
 
         with self.assertRaises(IntegrityError):
             asyncio.run(_attempt_invalid_insert())
+
+    # =========================================================================
+    # Task A7: Outbound Probing Removal & Asynchronous /check Tests
+    # =========================================================================
+    def test_test_url_endpoint_removed_returns_404(self):
+        """Verify the unauthenticated /test-url diagnostic endpoint is completely deleted (404)."""
+        response = self.client.post("/test-url", json={"url": "https://example.com"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_check_monitor_queues_celery_task_returns_202(self):
+        """Verify POST /monitors/{id}/check returns 202 Accepted and queues execute_ping.delay(id)."""
+        create_resp = self.client.post("/monitors/", json={
+            "name": "Async Check Target",
+            "url": "https://example.com",
+            "check_interval_seconds": 60,
+        })
+        self.assertEqual(create_resp.status_code, 201)
+        mid = create_resp.json()["id"]
+
+        with patch("app.main.execute_ping.delay") as mock_delay:
+            resp = self.client.post(f"/monitors/{mid}/check")
+            self.assertEqual(resp.status_code, 202)
+            self.assertEqual(resp.json(), {"status": "queued", "monitor_id": mid})
+            mock_delay.assert_called_once_with(mid)
+
+    def test_check_monitor_unknown_id_returns_404(self):
+        """Verify POST /monitors/{id}/check returns 404 when monitor ID does not exist."""
+        resp = self.client.post("/monitors/999999/check")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["detail"], "Monitor not found")
+
+    def test_api_architecture_contains_no_outbound_probing(self):
+        """
+        Architectural test: parses app/main.py with AST and asserts it contains
+        zero references to app.net, robust_ping, run_in_executor, or httpx.
+        """
+        import ast
+        from pathlib import Path
+
+        main_path = Path(__file__).resolve().parent.parent / "app" / "main.py"
+        with open(main_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename="main.py")
+
+        disallowed_names = {"robust_ping", "run_in_executor", "httpx"}
+        violations = []
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "app.net" or alias.name.startswith("app.net.") or alias.name == "httpx":
+                        violations.append(f"Import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "app.net" or (node.module and node.module.startswith("app.net")):
+                    violations.append(f"from {node.module} import ...")
+                for alias in node.names:
+                    if alias.name in disallowed_names:
+                        violations.append(f"Imported name {alias.name}")
+            elif isinstance(node, ast.Name) and node.id in disallowed_names:
+                violations.append(f"Name reference {node.id}")
+            elif isinstance(node, ast.Attribute) and node.attr in disallowed_names:
+                violations.append(f"Attribute access {node.attr}")
+
+        self.assertEqual(
+            violations,
+            [],
+            f"app/main.py must not reference outbound probing or run_in_executor. Found: {violations}"
+        )
 
 
 if __name__ == "__main__":

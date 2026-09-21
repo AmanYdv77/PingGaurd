@@ -1,6 +1,7 @@
 """
 PingGuard API Application.
 
+The API validates and stores; all outbound probes run in Celery workers.
 FastAPI application entry point implementing asynchronous REST endpoints for
 monitor registration, retrieval, update, listing, and on-demand checks.
 """
@@ -16,17 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import __version__
 from app.db import get_db
 from app.models import Monitor, PingResult
-from app.net import robust_ping
-from app.status import outcome_to_status
+from app.tasks import execute_ping
 from app.schemas import (
+    MonitorCheckResponse,
     MonitorCreate,
     MonitorMode,
     MonitorRead,
     MonitorStatus,
     MonitorUpdate,
     PingResultRead,
-    ProbeTestRequest,
-    ProbeTestResponse,
     validate_keep_alive_rules,
 )
 
@@ -295,42 +294,24 @@ async def get_monitor_results(
 
 
 @app.post(
-    "/test-url",
-    response_model=ProbeTestResponse,
-    tags=["Diagnostics"],
-    summary="Probe any public URL live",
-    description="Directly invokes the network resilience prober to test any public URL.",
-)
-async def test_public_url(payload: ProbeTestRequest) -> ProbeTestResponse:
-    """
-    Executes immediate network probe on any public URL using robust_ping.
-    """
-    import asyncio
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, robust_ping, str(payload.url))
-    return ProbeTestResponse(
-        outcome=result.outcome.value,
-        status_code=result.status_code,
-        latency_ms=result.latency_ms,
-        error_detail=result.error_detail,
-        original_url=result.original_url,
-        final_url=result.final_url,
-    )
-
-
-@app.post(
     "/monitors/{monitor_id}/check",
-    response_model=PingResultRead,
+    response_model=MonitorCheckResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     tags=["Monitors"],
-    summary="Manually trigger an on-demand probe for a monitor",
-    description="Probes the monitor endpoint immediately, updates monitor status in PostgreSQL, and records a PingResult row.",
+    summary="Queue on-demand probe check (results appear via GET /monitors/{id}/results)",
+    description=(
+        "Enqueues an immediate health probe task for the specified monitor to Celery workers. "
+        "Returns HTTP 202 Accepted immediately without performing outbound network I/O in the API. "
+        "Historical and latest check results can be retrieved via GET /monitors/{monitor_id}/results."
+    ),
 )
 async def trigger_monitor_check(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> PingResultRead:
+) -> MonitorCheckResponse:
     """
-    Triggers an immediate probe for the specified monitor, updating its status and adding a telemetry record.
+    Asynchronously queues a health probe for the specified monitor to Celery.
+    Results appear via GET /monitors/{id}/results.
     """
     monitor = await db.get(Monitor, monitor_id)
     if monitor is None:
@@ -338,24 +319,7 @@ async def trigger_monitor_check(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Monitor not found",
         )
-    
-    import asyncio
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, robust_ping, monitor.url)
-    
-    now = datetime.now(timezone.utc)
-    monitor.last_checked_at = now
-    monitor.status = outcome_to_status(result.outcome).value
-    
-    ping_result = PingResult(
-        monitor_id=monitor.id,
-        check_type="monitor",
-        status_code=result.status_code,
-        latency_ms=result.latency_ms,
-        error=result.error_detail,
-        checked_at=now,
-    )
-    db.add(ping_result)
-    await db.commit()
-    await db.refresh(ping_result)
-    return ping_result
+    await db.close()
+
+    execute_ping.delay(monitor.id)
+    return MonitorCheckResponse(status="queued", monitor_id=monitor.id)

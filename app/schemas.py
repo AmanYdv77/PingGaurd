@@ -233,23 +233,12 @@ class PingResultRead(BaseModel):
     checked_at: datetime = Field(..., description="UTC timestamp of the probe execution.")
 
 
-class ProbeTestRequest(BaseModel):
+class MonitorCheckResponse(BaseModel):
     """
-    Request contract for live interactive URL probing.
+    Response model for an asynchronous monitor check request.
     """
-    url: HttpUrl = Field(..., description="Public target URL to probe immediately.")
-
-
-class ProbeTestResponse(BaseModel):
-    """
-    Diagnostic response from an immediate URL probe.
-    """
-    outcome: str
-    status_code: int | None
-    latency_ms: float | None
-    error_detail: str | None
-    original_url: str
-    final_url: str | None
+    status: str = Field(default="queued", description="Dispatch status of the probe task.")
+    monitor_id: int = Field(..., description="Unique integer ID of the monitor queued for checking.")
 
 
 class MonitorUpdate(BaseModel):
