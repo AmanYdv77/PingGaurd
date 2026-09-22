@@ -503,6 +503,46 @@ class TestNetworkResilience(unittest.TestCase):
         self.assertIsNotNone(captured_req)
         self.assertEqual(captured_req.extensions.get("sni_hostname"), "secure-service.example.org")
 
+    def test_characterisation_httpx_exception_mapping(self) -> None:
+        """
+        Characterisation tests pinning current behaviour for all handled httpx exceptions.
+        Maps each exception raised by MockTransport to expected outcome and error_detail.
+        """
+        mock_resolver = lambda h, p, t=0: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+
+        ssl_err = ssl.SSLCertVerificationError("cert expired")
+        tls_connect_err = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] cert expired")
+        tls_connect_err.__cause__ = ssl_err
+
+        cases = [
+            (httpx.ConnectTimeout("connection timed out"), "connect_timeout"),
+            (httpx.ReadTimeout("read timed out"), "read_timeout"),
+            (httpx.WriteTimeout("write timed out"), "write_timeout"),
+            (httpx.PoolTimeout("pool timed out"), "pool_timeout"),
+            (httpx.TooManyRedirects("too many redirects"), "redirect_error"),
+            (httpx.ConnectError("failed to connect"), "connect_error"),
+            (tls_connect_err, "tls_error"),
+            (httpx.RequestError("generic error"), "request_error"),
+        ]
+
+        for exc, expected_error in cases:
+            with self.subTest(exc_type=type(exc).__name__, expected=expected_error):
+                def handler(request: httpx.Request, e=exc) -> httpx.Response:
+                    e.request = request
+                    raise e
+
+                transport = httpx.MockTransport(handler)
+                res = robust_ping(
+                    "https://example.com/test-characterisation",
+                    allow_loopback=True,
+                    transport=transport,
+                    dns_resolver=mock_resolver,
+                )
+                self.assertEqual(res.outcome, PingOutcome.UNREACHABLE)
+                self.assertIsNone(res.status_code)
+                self.assertEqual(res.error_detail, expected_error)
+                self.assertIsNotNone(res.latency_ms)
+
 
 if __name__ == "__main__":
     unittest.main()

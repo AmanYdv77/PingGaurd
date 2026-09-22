@@ -47,13 +47,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     the connection session when the request finishes.
     """
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+        yield session
 
 
 # =========================================================================

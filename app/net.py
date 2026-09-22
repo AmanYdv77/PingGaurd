@@ -299,6 +299,36 @@ def is_tls_exception(exc: Exception) -> bool:
     return False
 
 
+# Table-driven mapping for probe exception dispatch.
+# Evaluation order is strict: specific subclasses MUST precede parent classes.
+HTTPX_EXCEPTION_TABLE: tuple[tuple[type[Exception], PingOutcome, str], ...] = (
+    (httpx.ConnectTimeout, PingOutcome.UNREACHABLE, "connect_timeout"),
+    (httpx.ReadTimeout, PingOutcome.UNREACHABLE, "read_timeout"),
+    (httpx.WriteTimeout, PingOutcome.UNREACHABLE, "write_timeout"),
+    (httpx.PoolTimeout, PingOutcome.UNREACHABLE, "pool_timeout"),
+    (httpx.TooManyRedirects, PingOutcome.UNREACHABLE, "redirect_error"),
+    (httpx.ConnectError, PingOutcome.UNREACHABLE, "connect_error"),
+    (httpx.RequestError, PingOutcome.UNREACHABLE, "request_error"),
+)
+
+
+def _build_probe_error_result(
+    url: str,
+    error_detail: str,
+    latency_ms: float | None = None,
+    outcome: PingOutcome = PingOutcome.UNREACHABLE,
+) -> PingResultDTO:
+    """Helper to construct a standardized probe error PingResultDTO."""
+    return PingResultDTO(
+        outcome=outcome,
+        status_code=None,
+        latency_ms=latency_ms,
+        error_detail=error_detail,
+        original_url=url,
+        final_url=None,
+    )
+
+
 # =============================================================================
 # 5. Core Asynchronous Network Probe Engine
 # =============================================================================
@@ -378,25 +408,11 @@ async def perform_http_probe(
                                 logger.warning("Target rejected by SSRF defense: %s (%s)", safe_url, exc)
                             else:
                                 logger.warning("SSRF blocked during redirect for '%s': %s", safe_url, exc)
-                            return PingResultDTO(
-                                outcome=PingOutcome.UNREACHABLE,
-                                status_code=None,
-                                latency_ms=None,
-                                error_detail="ssrf_blocked",
-                                original_url=url,
-                                final_url=None,
-                            )
+                            return _build_probe_error_result(url, "ssrf_blocked", latency_ms=None)
                         except DNSResolutionError as exc:
                             elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
                             logger.warning("Target DNS resolution failed: %s (%s)", safe_url, exc)
-                            return PingResultDTO(
-                                outcome=PingOutcome.UNREACHABLE,
-                                status_code=None,
-                                latency_ms=elapsed_ms,
-                                error_detail="dns_error",
-                                original_url=url,
-                                final_url=None,
-                            )
+                            return _build_probe_error_result(url, "dns_error", latency_ms=elapsed_ms)
 
                         # Step 2: Rewrite request target to pinned IP while preserving Host and SNI
                         host_literal = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
@@ -478,105 +494,28 @@ async def perform_http_probe(
 
             except SSRFBlockedError as exc:
                 logger.warning("SSRF blocked during redirect for '%s': %s", safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=None,
-                    error_detail="ssrf_blocked",
-                    original_url=url,
-                    final_url=None,
-                )
-
-            except httpx.ConnectTimeout as exc:
-                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                logger.info("Connect timeout on '%s' (%s)", safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail="connect_timeout",
-                    original_url=url,
-                    final_url=None,
-                )
-
-            except httpx.ReadTimeout as exc:
-                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                logger.info("Read timeout on '%s' (%s)", safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail="read_timeout",
-                    original_url=url,
-                    final_url=None,
-                )
-
-            except (httpx.WriteTimeout, httpx.PoolTimeout) as exc:
-                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                error_name = "write_timeout" if isinstance(exc, httpx.WriteTimeout) else "pool_timeout"
-                logger.info("%s on '%s' (%s)", error_name, safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail=error_name,
-                    original_url=url,
-                    final_url=None,
-                )
-
-            except httpx.TooManyRedirects as exc:
-                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                logger.info("Too many redirects on '%s' (%s)", safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail="redirect_error",
-                    original_url=url,
-                    final_url=None,
-                )
-
-            except httpx.ConnectError as exc:
-                elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                if is_tls_exception(exc):
-                    logger.info("TLS certificate error on '%s' (%s)", safe_url, exc)
-                    err = "tls_error"
-                else:
-                    logger.info("Connection failed on '%s' (%s)", safe_url, exc)
-                    err = "connect_error"
-
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail=err,
-                    original_url=url,
-                    final_url=None,
-                )
+                return _build_probe_error_result(url, "ssrf_blocked", latency_ms=None)
 
             except httpx.RequestError as exc:
                 elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
-                logger.info("HTTP request error on '%s' (%s)", safe_url, exc)
-                return PingResultDTO(
-                    outcome=PingOutcome.UNREACHABLE,
-                    status_code=None,
-                    latency_ms=elapsed_ms,
-                    error_detail="request_error",
-                    original_url=url,
-                    final_url=None,
-                )
+                outcome = PingOutcome.UNREACHABLE
+                error_detail = "request_error"
+                for exc_type, mapped_outcome, mapped_detail in HTTPX_EXCEPTION_TABLE:
+                    if isinstance(exc, exc_type):
+                        outcome = mapped_outcome
+                        if exc_type is httpx.ConnectError and is_tls_exception(exc):
+                            error_detail = "tls_error"
+                            logger.info("TLS certificate error on '%s' (%s)", safe_url, exc)
+                        else:
+                            error_detail = mapped_detail
+                            logger.info("%s on '%s' (%s)", mapped_detail, safe_url, exc)
+                        break
+                return _build_probe_error_result(url, error_detail, latency_ms=elapsed_ms, outcome=outcome)
 
     except TimeoutError as exc:
         elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
         logger.info("Total probe deadline exceeded for '%s' (%s)", safe_url, exc)
-        return PingResultDTO(
-            outcome=PingOutcome.UNREACHABLE,
-            status_code=None,
-            latency_ms=elapsed_ms,
-            error_detail="total_timeout",
-            original_url=url,
-            final_url=None,
-        )
+        return _build_probe_error_result(url, "total_timeout", latency_ms=elapsed_ms)
 
 
 # =============================================================================
