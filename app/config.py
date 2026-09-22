@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     celery_soft_time_limit: int = 10
     celery_hard_time_limit: int = 15
 
+    # 6. Abuse Prevention & Resource Limits
+    rate_limit_writes_per_minute: int = 60
+    max_monitors: int = 100
+
+
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: SecretStr) -> SecretStr:
@@ -150,13 +155,20 @@ class Settings(BaseSettings):
             raise ValueError("Timeout and interval values must be greater than zero")
         return v
 
-    @field_validator("http_max_response_bytes", "celery_soft_time_limit", "celery_hard_time_limit")
+    @field_validator(
+        "http_max_response_bytes",
+        "celery_soft_time_limit",
+        "celery_hard_time_limit",
+        "rate_limit_writes_per_minute",
+        "max_monitors",
+    )
     @classmethod
     def validate_positive_int(cls, v: int) -> int:
         """Validate that integer values are strictly positive."""
         if v <= 0:
             raise ValueError("Value must be greater than zero")
         return v
+
 
     @field_validator("http_max_redirects")
     @classmethod

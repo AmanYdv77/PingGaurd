@@ -275,5 +275,34 @@ def test_cors_allowed_origins_invalid_path_rejected(monkeypatch):
     assert "path" in str(exc_info.value).lower()
 
 
+def test_rate_limit_and_monitor_cap_defaults():
+    """Verify rate_limit_writes_per_minute and max_monitors default values."""
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.rate_limit_writes_per_minute == 60
+    assert s.max_monitors == 100
+
+
+def test_rate_limit_and_monitor_cap_positive_validation():
+    """Verify rate_limit_writes_per_minute and max_monitors reject zero or negative values."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            rate_limit_writes_per_minute=0,
+        )
+    assert "rate_limit_writes_per_minute" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            max_monitors=-5,
+        )
+    assert "max_monitors" in str(exc_info.value)
+
+
+
 
 

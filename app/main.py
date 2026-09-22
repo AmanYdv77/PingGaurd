@@ -11,15 +11,17 @@ from enum import Enum
 from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
 from app.config import get_settings
 from app.db import get_db
 from app.models import Monitor, PingResult
+from app.ratelimit import rate_limit_write
 from app.security import require_api_key
 from app.tasks import execute_ping
+
 from app.schemas import (
     MonitorCheckResponse,
     MonitorCreate,
@@ -86,6 +88,7 @@ router = APIRouter(
     "/",
     response_model=MonitorRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_write)],
     summary="Create a new monitor",
     description=(
         "Validates and persists a new monitor endpoint in PostgreSQL with optional keep-alive settings. "
@@ -105,7 +108,16 @@ async def create_monitor(
     - Initializes status to PENDING and marks next_check_at as due immediately.
     - Returns serialized MonitorRead.
     """
+    settings = get_settings()
+    count = await db.scalar(select(func.count()).select_from(Monitor))
+    if count is not None and count >= settings.max_monitors:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="monitor limit reached",
+        )
+
     now = datetime.now(timezone.utc)
+
     monitor = Monitor(
         name=payload.name,
         url=str(payload.url),
@@ -152,12 +164,14 @@ async def get_monitor(
 @router.patch(
     "/{monitor_id}",
     response_model=MonitorRead,
+    dependencies=[Depends(rate_limit_write)],
     summary="Update monitor (Partial)",
     description="Partially updates an existing monitor's name, check interval, or keep-alive configuration in PostgreSQL.",
 )
 @router.put(
     "/{monitor_id}",
     response_model=MonitorRead,
+    dependencies=[Depends(rate_limit_write)],
     summary="Update monitor",
     description="Updates an existing monitor's configuration, including keep-alive parameters in PostgreSQL.",
 )
@@ -248,6 +262,7 @@ async def list_monitors(
 @router.delete(
     "/{monitor_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(rate_limit_write)],
     summary="Delete monitor",
     description="Deletes an existing monitor and all associated probe results (CASCADE).",
 )
@@ -302,8 +317,10 @@ async def get_monitor_results(
     "/{monitor_id}/check",
     response_model=MonitorCheckResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_write)],
     summary="Queue on-demand probe check (results appear via GET /monitors/{id}/results)",
     description=(
+
         "Enqueues an immediate health probe task for the specified monitor to Celery workers. "
         "Returns HTTP 202 Accepted immediately without performing outbound network I/O in the API. "
         "Historical and latest check results can be retrieved via GET /monitors/{monitor_id}/results."
