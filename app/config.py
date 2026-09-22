@@ -86,10 +86,10 @@ class Settings(BaseSettings):
         norm = v.strip().upper()
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if norm not in valid_levels:
-            raise ValueError(f"Invalid log level: {v}. Must be one of: {', '.join(sorted(valid_levels))}")
+            raise ValueError(
+                f"Invalid log level: {v}. Must be one of: {', '.join(sorted(valid_levels))}"
+            )
         return norm
-
-
 
     @field_validator("api_key")
     @classmethod
@@ -116,7 +116,9 @@ class Settings(BaseSettings):
         elif isinstance(v, (list, tuple, set)):
             raw_origins = [str(item).strip() for item in v if str(item).strip()]
         else:
-            raise ValueError("CORS_ALLOWED_ORIGINS must be a comma-separated string or list of origins")
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS must be a comma-separated string or list of origins"
+            )
 
         validated: list[str] = []
         for origin in raw_origins:
@@ -195,8 +197,6 @@ class Settings(BaseSettings):
         if v <= 0:
             raise ValueError("Value must be greater than zero")
         return v
-
-
 
     @field_validator("http_max_redirects")
     @classmethod

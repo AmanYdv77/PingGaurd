@@ -41,7 +41,9 @@ def test_isolated_module_import_in_subprocess(module_name: str):
         env=TEST_ENV,
         cwd=str(APP_DIR.parent),
     )
-    assert res.returncode == 0, f"Failed importing app.{module_name} in fresh process:\n{res.stderr}"
+    assert res.returncode == 0, (
+        f"Failed importing app.{module_name} in fresh process:\n{res.stderr}"
+    )
 
 
 def test_no_function_level_imports_in_app():
@@ -79,18 +81,21 @@ def test_schemas_does_not_import_net():
 def test_urls_pure_module_exists():
     """Verify app/urls.py exists and safe_join_url can be imported."""
     from app.urls import safe_join_url
+
     assert callable(safe_join_url)
 
 
 def test_ssrf_module_exists():
     """Verify app/ssrf.py exists and exports is_ip_blocked."""
     from app.ssrf import is_ip_blocked
+
     assert callable(is_ip_blocked)
 
 
 def test_enums_pure_module_exists():
     """Verify app/enums.py exists and exports MonitorStatus, MonitorMode, PingOutcome."""
     from app.enums import MonitorMode, MonitorStatus, PingOutcome
+
     assert issubclass(MonitorMode, str)
     assert issubclass(MonitorStatus, str)
     assert issubclass(PingOutcome, str)

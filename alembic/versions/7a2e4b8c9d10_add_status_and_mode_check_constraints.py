@@ -5,6 +5,7 @@ Revises: ea1acc2dea1b
 Create Date: 2026-09-21 16:55:00.000000
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '7a2e4b8c9d10'
-down_revision: Union[str, Sequence[str], None] = 'ea1acc2dea1b'
+revision: str = "7a2e4b8c9d10"
+down_revision: Union[str, Sequence[str], None] = "ea1acc2dea1b"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -21,7 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Apply data cleanup and add named check constraints to monitors and ping_results."""
     # 1. Clean up any existing invalid monitor status values before applying constraint
-    op.execute("UPDATE monitors SET status = 'down' WHERE status NOT IN ('up', 'degraded', 'down', 'pending')")
+    op.execute(
+        "UPDATE monitors SET status = 'down' WHERE status NOT IN ('up', 'degraded', 'down', 'pending')"
+    )
 
     # 2. Add named CHECK constraints
     op.create_check_constraint(

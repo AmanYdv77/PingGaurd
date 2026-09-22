@@ -64,6 +64,7 @@ def client():
     """Unauthenticated FastAPI TestClient."""
     from fastapi.testclient import TestClient
     import app.main
+
     with TestClient(app.main.app) as c:
         yield c
 
@@ -73,6 +74,7 @@ def auth_client():
     """FastAPI TestClient pre-configured with the valid X-API-Key header."""
     from fastapi.testclient import TestClient
     import app.main
+
     with TestClient(app.main.app, headers={"X-API-Key": TEST_API_KEY}) as c:
         yield c
 
@@ -81,6 +83,7 @@ def auth_client():
 def db_session():
     """Synchronous SQLAlchemy Session connected to the test database."""
     from app.db import get_sync_db
+
     with get_sync_db() as session:
         yield session
 
@@ -90,6 +93,7 @@ def cleanup_database():
     """Truncate tables before each test run against the verified test database."""
     from sqlalchemy import text
     from app.db import sync_engine
+
     with sync_engine.begin() as conn:
         conn.execute(text("TRUNCATE TABLE ping_results, monitors RESTART IDENTITY CASCADE;"))
     yield
@@ -126,5 +130,3 @@ def setup_db_override():
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: InMemoryRateLimiter()
     yield
     app.main.app.dependency_overrides.clear()
-
-

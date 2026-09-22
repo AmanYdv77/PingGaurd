@@ -74,10 +74,7 @@ def test_create_monitor_valid_and_backward_compatible(auth_client: TestClient) -
     Expected: 201 Created, check_interval_seconds=60, mode='monitor',
               keep_alive_enabled=false, keep_alive_interval_seconds=null, keep_alive_path=null.
     """
-    payload = {
-        "name": "t",
-        "url": "https://example.com"
-    }
+    payload = {"name": "t", "url": "https://example.com"}
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 201
     data = response.json()
@@ -103,7 +100,7 @@ def test_create_monitor_custom_interval(auth_client: TestClient) -> None:
     payload = {
         "name": "Production API",
         "url": "https://api.example.org/health",
-        "check_interval_seconds": 30
+        "check_interval_seconds": 30,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 201
@@ -120,7 +117,7 @@ def test_create_monitor_with_keep_alive(auth_client: TestClient) -> None:
         "mode": "monitor_and_keep_alive",
         "keep_alive_enabled": True,
         "keep_alive_interval_seconds": 600,
-        "keep_alive_path": "/health"
+        "keep_alive_path": "/health",
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 201
@@ -140,7 +137,7 @@ def test_create_keep_alive_only_mode(auth_client: TestClient) -> None:
         "mode": "keep_alive",
         "keep_alive_enabled": True,
         "keep_alive_interval_seconds": 300,
-        "keep_alive_path": "/ping"
+        "keep_alive_path": "/ping",
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 201
@@ -160,7 +157,7 @@ def test_keep_alive_enabled_without_interval_fails(auth_client: TestClient) -> N
         "url": "https://example.com",
         "mode": "keep_alive",
         "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": None
+        "keep_alive_interval_seconds": None,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 422
@@ -173,7 +170,7 @@ def test_keep_alive_interval_below_minimum(auth_client: TestClient) -> None:
         "url": "https://example.com",
         "mode": "keep_alive",
         "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": 10
+        "keep_alive_interval_seconds": 10,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 422
@@ -186,7 +183,7 @@ def test_keep_alive_interval_above_maximum(auth_client: TestClient) -> None:
         "url": "https://example.com",
         "mode": "keep_alive",
         "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": 90000
+        "keep_alive_interval_seconds": 90000,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 422
@@ -199,7 +196,7 @@ def test_keep_alive_disabled_with_interval_rejected(auth_client: TestClient) -> 
         "url": "https://example.com",
         "mode": "monitor",
         "keep_alive_enabled": False,
-        "keep_alive_interval_seconds": 600
+        "keep_alive_interval_seconds": 600,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 422
@@ -215,7 +212,7 @@ def test_keep_alive_path_valid(auth_client: TestClient) -> None:
             "mode": "keep_alive",
             "keep_alive_enabled": True,
             "keep_alive_interval_seconds": 60,
-            "keep_alive_path": p
+            "keep_alive_path": p,
         }
         response = auth_client.post("/monitors/", json=payload)
         assert response.status_code == 201, f"Failed for valid path {p}"
@@ -229,7 +226,7 @@ def test_keep_alive_path_absolute_url_fails(auth_client: TestClient) -> None:
         "http://other-site.com/health",
         "//malicious-redirect.com",
         "health",
-        "just-path"
+        "just-path",
     ]
     for p in invalid_paths:
         payload = {
@@ -238,7 +235,7 @@ def test_keep_alive_path_absolute_url_fails(auth_client: TestClient) -> None:
             "mode": "keep_alive",
             "keep_alive_enabled": True,
             "keep_alive_interval_seconds": 60,
-            "keep_alive_path": p
+            "keep_alive_path": p,
         }
         response = auth_client.post("/monitors/", json=payload)
         assert response.status_code == 422, f"Expected 422 for invalid path {p}"
@@ -252,7 +249,7 @@ def test_monitor_only_explicit_false(auth_client: TestClient) -> None:
         "mode": "monitor",
         "keep_alive_enabled": False,
         "keep_alive_interval_seconds": None,
-        "keep_alive_path": None
+        "keep_alive_path": None,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 201
@@ -268,7 +265,7 @@ def test_monitor_mode_with_keep_alive_enabled_true_fails(auth_client: TestClient
         "url": "https://example.com",
         "mode": "monitor",
         "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": 60
+        "keep_alive_interval_seconds": 60,
     }
     response = auth_client.post("/monitors/", json=payload)
     assert response.status_code == 422
@@ -287,8 +284,8 @@ def test_get_returns_all_new_fields(auth_client: TestClient) -> None:
             "mode": "monitor_and_keep_alive",
             "keep_alive_enabled": True,
             "keep_alive_interval_seconds": 120,
-            "keep_alive_path": "/healthz"
-        }
+            "keep_alive_path": "/healthz",
+        },
     )
     created_id = create_resp.json()["id"]
 
@@ -305,8 +302,7 @@ def test_update_modify_keep_alive_configuration(auth_client: TestClient) -> None
     """PATCH /monitors/{id} can enable, modify, or disable keep-alive settings."""
     # 1. Create standard monitor
     create_resp = auth_client.post(
-        "/monitors/",
-        json={"name": "Updatable", "url": "https://example.com"}
+        "/monitors/", json={"name": "Updatable", "url": "https://example.com"}
     )
     mid = create_resp.json()["id"]
 
@@ -317,8 +313,8 @@ def test_update_modify_keep_alive_configuration(auth_client: TestClient) -> None
             "mode": "monitor_and_keep_alive",
             "keep_alive_enabled": True,
             "keep_alive_interval_seconds": 180,
-            "keep_alive_path": "/ping"
-        }
+            "keep_alive_path": "/ping",
+        },
     )
     assert patch_resp.status_code == 200
     data = patch_resp.json()
@@ -329,16 +325,12 @@ def test_update_modify_keep_alive_configuration(auth_client: TestClient) -> None
 
     # 3. Incomplete update fails (keep_alive_enabled=True without interval)
     bad_patch = auth_client.patch(
-        f"/monitors/{mid}",
-        json={"keep_alive_enabled": True, "keep_alive_interval_seconds": None}
+        f"/monitors/{mid}", json={"keep_alive_enabled": True, "keep_alive_interval_seconds": None}
     )
     assert bad_patch.status_code == 422
 
     # 4. Disable keep-alive
-    disable_resp = auth_client.patch(
-        f"/monitors/{mid}",
-        json={"keep_alive_enabled": False}
-    )
+    disable_resp = auth_client.patch(f"/monitors/{mid}", json={"keep_alive_enabled": False})
     assert disable_resp.status_code == 200
     dis_data = disable_resp.json()
     assert dis_data["keep_alive_enabled"] is False
@@ -356,10 +348,30 @@ def test_get_unknown_monitor_returns_404(auth_client: TestClient) -> None:
 def test_invalid_original_fields_produce_422(auth_client: TestClient) -> None:
     """Invalid URL, empty name, name too long, interval bounds still return 422."""
     assert auth_client.post("/monitors/", json={"name": "A", "url": "not-url"}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "", "url": "https://example.com"}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "A" * 121, "url": "https://example.com"}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "A", "url": "https://example.com", "check_interval_seconds": 10}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "A", "url": "https://example.com", "check_interval_seconds": 90000}).status_code == 422
+    assert (
+        auth_client.post("/monitors/", json={"name": "", "url": "https://example.com"}).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/", json={"name": "A" * 121, "url": "https://example.com"}
+        ).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={"name": "A", "url": "https://example.com", "check_interval_seconds": 10},
+        ).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={"name": "A", "url": "https://example.com", "check_interval_seconds": 90000},
+        ).status_code
+        == 422
+    )
 
 
 # =========================================================================
@@ -373,14 +385,21 @@ def test_creating_monitor_never_probes_network(auth_client: TestClient) -> None:
     Patches app.net.perform_http_probe and httpx.AsyncClient.send with sentinels
     that raise AssertionError if called; asserts creation succeeds and neither sentinel fired.
     """
+
     def probe_sentinel(*args, **kwargs):
-        raise AssertionError("app.net.perform_http_probe was unexpectedly called during monitor creation")
+        raise AssertionError(
+            "app.net.perform_http_probe was unexpectedly called during monitor creation"
+        )
 
     def httpx_sentinel(*args, **kwargs):
-        raise AssertionError("httpx.AsyncClient.send was unexpectedly called during monitor creation")
+        raise AssertionError(
+            "httpx.AsyncClient.send was unexpectedly called during monitor creation"
+        )
 
-    with patch("app.net.perform_http_probe", side_effect=probe_sentinel), \
-         patch("httpx.AsyncClient.send", side_effect=httpx_sentinel):
+    with (
+        patch("app.net.perform_http_probe", side_effect=probe_sentinel),
+        patch("httpx.AsyncClient.send", side_effect=httpx_sentinel),
+    ):
         response = auth_client.post(
             "/monitors/",
             json={
@@ -405,8 +424,8 @@ def test_list_monitors_includes_keep_alive(auth_client: TestClient) -> None:
             "url": "https://m2.com",
             "mode": "keep_alive",
             "keep_alive_enabled": True,
-            "keep_alive_interval_seconds": 60
-        }
+            "keep_alive_interval_seconds": 60,
+        },
     )
     response = auth_client.get("/monitors/")
     assert response.status_code == 200
@@ -436,8 +455,7 @@ def test_openapi_schema_exposes_new_models(client: TestClient) -> None:
 def test_update_monitor_put_keep_alive(auth_client: TestClient) -> None:
     """Verify PUT endpoint works symmetrically with keep-alive configurations."""
     create_resp = auth_client.post(
-        "/monitors/",
-        json={"name": "Initial", "url": "https://example.com"}
+        "/monitors/", json={"name": "Initial", "url": "https://example.com"}
     )
     mid = create_resp.json()["id"]
 
@@ -448,8 +466,8 @@ def test_update_monitor_put_keep_alive(auth_client: TestClient) -> None:
             "mode": "keep_alive",
             "keep_alive_enabled": True,
             "keep_alive_interval_seconds": 120,
-            "keep_alive_path": "/status"
-        }
+            "keep_alive_path": "/status",
+        },
     )
     assert put_resp.status_code == 200
     data = put_resp.json()
@@ -486,7 +504,7 @@ def test_keep_alive_fields_persisted_in_postgresql(auth_client: TestClient, db_s
         "mode": "monitor_and_keep_alive",
         "keep_alive_enabled": True,
         "keep_alive_interval_seconds": 600,
-        "keep_alive_path": "/health"
+        "keep_alive_path": "/health",
     }
     create_resp = auth_client.post("/monitors/", json=payload)
     assert create_resp.status_code == 201
@@ -517,7 +535,7 @@ def test_persistence_across_app_restart(auth_client: TestClient) -> None:
         "mode": "monitor_and_keep_alive",
         "keep_alive_enabled": True,
         "keep_alive_interval_seconds": 450,
-        "keep_alive_path": "/alive"
+        "keep_alive_path": "/alive",
     }
     res1 = auth_client.post("/monitors/", json=payload)
     assert res1.status_code == 201
@@ -529,6 +547,7 @@ def test_persistence_across_app_restart(auth_client: TestClient) -> None:
             del sys.modules[mod]
 
     from app.main import app as restarted_app
+
     restarted_client = TestClient(restarted_app, headers={"X-API-Key": TEST_API_KEY})
 
     # 3. Retrieve from new application instance
@@ -630,11 +649,14 @@ def test_cascade_delete_monitor_and_ping_results(db_session) -> None:
 
 def test_delete_monitor_api(auth_client: TestClient) -> None:
     """Verify DELETE /monitors/{id} deletes the monitor and returns 204."""
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Delete Me Test",
-        "url": "https://example.com/delete-test",
-        "check_interval_seconds": 60,
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Delete Me Test",
+            "url": "https://example.com/delete-test",
+            "check_interval_seconds": 60,
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
@@ -647,11 +669,14 @@ def test_delete_monitor_api(auth_client: TestClient) -> None:
 
 def test_get_monitor_results_api(auth_client: TestClient) -> None:
     """Verify GET /monitors/{id}/results returns historical telemetry."""
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Results Test",
-        "url": "https://example.com/results-test",
-        "check_interval_seconds": 60,
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Results Test",
+            "url": "https://example.com/results-test",
+            "check_interval_seconds": 60,
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
@@ -673,16 +698,20 @@ def test_check_unreachable_status_does_not_break_list_monitors(auth_client: Test
     3. Run worker task.
     4. Verify GET /monitors/ and GET /monitors/{id} return 200 OK and valid status (not 500).
     """
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Dead Host Monitor",
-        "url": "https://nonexistent-fake-target-domain-999.xyz",
-        "check_interval_seconds": 60,
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Dead Host Monitor",
+            "url": "https://nonexistent-fake-target-domain-999.xyz",
+            "check_interval_seconds": 60,
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
     # 2. Trigger on-demand check (returns 202 Accepted, queues Celery task)
     from app.tasks import execute_ping
+
     with patch("app.main.execute_ping.delay") as mock_delay:
         check_resp = auth_client.post(f"/monitors/{mid}/check")
         assert check_resp.status_code == 202
@@ -716,7 +745,6 @@ def test_unreachable_status_db_constraint_rejected(db_session) -> None:
     db_session.rollback()
 
 
-
 # =========================================================================
 # Asynchronous /check Endpoint & Architectural Boundaries
 # =========================================================================
@@ -728,11 +756,14 @@ def test_test_url_endpoint_removed_returns_404(client: TestClient) -> None:
 
 def test_check_monitor_queues_celery_task_returns_202(auth_client: TestClient) -> None:
     """Verify POST /monitors/{id}/check returns 202 Accepted and queues execute_ping.delay(id)."""
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Async Check Target",
-        "url": "https://example.com",
-        "check_interval_seconds": 60,
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Async Check Target",
+            "url": "https://example.com",
+            "check_interval_seconds": 60,
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
@@ -765,7 +796,11 @@ def test_api_architecture_contains_no_outbound_probing() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "app.net" or alias.name.startswith("app.net.") or alias.name == "httpx":
+                if (
+                    alias.name == "app.net"
+                    or alias.name.startswith("app.net.")
+                    or alias.name == "httpx"
+                ):
                     violations.append(f"Import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             if node.module == "app.net" or (node.module and node.module.startswith("app.net")):
@@ -778,7 +813,9 @@ def test_api_architecture_contains_no_outbound_probing() -> None:
         elif isinstance(node, ast.Attribute) and node.attr in disallowed_names:
             violations.append(f"Attribute access {node.attr}")
 
-    assert violations == [], f"app/main.py must not reference outbound probing or run_in_executor. Found: {violations}"
+    assert violations == [], (
+        f"app/main.py must not reference outbound probing or run_in_executor. Found: {violations}"
+    )
 
 
 # =========================================================================
@@ -828,7 +865,9 @@ def test_openapi_declares_security_scheme() -> None:
 # =========================================================================
 def test_cors_architecture_contains_no_wildcard() -> None:
     """Verify app/main.py does not contain wildcard allow_origins."""
-    main_py = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text(encoding="utf-8")
+    main_py = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text(
+        encoding="utf-8"
+    )
     assert 'allow_origins=["*"]' not in main_py
     assert "allow_origins=['*']" not in main_py
 
@@ -848,6 +887,7 @@ def test_cors_allowed_origin_preflight_and_disallowed() -> None:
     os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:3000"
     get_settings.cache_clear()
     import app.main
+
     importlib.reload(app.main)
 
     try:
@@ -894,6 +934,7 @@ def test_write_rate_limit_allowed_under_limit(auth_client: TestClient) -> None:
     """Write requests within the limit succeed."""
     import app.main
     from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+
     limiter = InMemoryRateLimiter()
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: limiter
 
@@ -906,10 +947,12 @@ def test_write_rate_limit_429_over_limit(auth_client: TestClient) -> None:
     """Exceeding write rate limit returns HTTP 429 with Retry-After header."""
     import app.main
     from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+
     limiter = InMemoryRateLimiter()
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: limiter
 
     from app.config import get_settings
+
     settings = get_settings()
     limit = settings.rate_limit_writes_per_minute
 
@@ -931,11 +974,13 @@ def test_write_rate_limit_window_reset(auth_client: TestClient) -> None:
     """Injectable clock advancing beyond window_seconds resets the limit without sleeps."""
     import app.main
     from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+
     current_time = [1000.0]
     limiter = InMemoryRateLimiter(clock=lambda: current_time[0])
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: limiter
 
     from app.config import get_settings
+
     limit = get_settings().rate_limit_writes_per_minute
 
     for i in range(limit):
@@ -950,11 +995,15 @@ def test_write_rate_limit_window_reset(auth_client: TestClient) -> None:
     current_time[0] += 61.0
 
     # Now allowed again
-    resp2 = auth_client.post("/monitors/", json={"name": "AllowedAfterReset", "url": "https://reset.com"})
+    resp2 = auth_client.post(
+        "/monitors/", json={"name": "AllowedAfterReset", "url": "https://reset.com"}
+    )
     assert resp2.status_code == 201
 
 
-def test_write_rate_limit_redis_failure_fails_open(auth_client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_write_rate_limit_redis_failure_fails_open(
+    auth_client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
     """When Redis encounters an error, rate limiter fails open with logged warning."""
     import app.main
     from app.ratelimit import get_rate_limiter, logger as rl_logger
@@ -968,16 +1017,22 @@ def test_write_rate_limit_redis_failure_fails_open(auth_client: TestClient, capl
     rl_logger.disabled = False
 
     with caplog.at_level(logging.WARNING, logger="app.ratelimit"):
-        resp = auth_client.post("/monitors/", json={"name": "FailOpen", "url": "https://failopen.com"})
+        resp = auth_client.post(
+            "/monitors/", json={"name": "FailOpen", "url": "https://failopen.com"}
+        )
         assert resp.status_code == 201
 
-    assert any("fail open" in record.message.lower() or "redis" in record.message.lower() for record in caplog.records)
+    assert any(
+        "fail open" in record.message.lower() or "redis" in record.message.lower()
+        for record in caplog.records
+    )
 
 
 def test_get_endpoints_not_rate_limited(auth_client: TestClient) -> None:
     """GET endpoints are not subject to write rate limits."""
     import app.main
     from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+
     limiter = InMemoryRateLimiter()
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: limiter
 
@@ -987,6 +1042,7 @@ def test_get_endpoints_not_rate_limited(auth_client: TestClient) -> None:
     mid = resp.json()["id"]
 
     from app.config import get_settings
+
     limit = get_settings().rate_limit_writes_per_minute
 
     # Exhaust write limit
@@ -994,7 +1050,9 @@ def test_get_endpoints_not_rate_limited(auth_client: TestClient) -> None:
         auth_client.post("/monitors/", json={"name": f"M{i}", "url": f"https://m{i}.com"})
 
     # Write is now blocked
-    write_resp = auth_client.post("/monitors/", json={"name": "Exceeded", "url": "https://exceeded.com"})
+    write_resp = auth_client.post(
+        "/monitors/", json={"name": "Exceeded", "url": "https://exceeded.com"}
+    )
     assert write_resp.status_code == 429
 
     # GET /monitors/ and GET /monitors/{id} must still return 200
@@ -1039,47 +1097,86 @@ def test_monitor_cap_enforced(auth_client: TestClient) -> None:
         get_settings.cache_clear()
 
 
-
 # =========================================================================
 # Additional Behaviour Tests for Untested Paths
 # =========================================================================
 def test_create_monitor_validation_errors(auth_client: TestClient) -> None:
     """Verify POST /monitors returns HTTP 422 for invalid schemes, missing keep-alive intervals, and out-of-range intervals."""
     # Invalid schemes
-    assert auth_client.post("/monitors/", json={"name": "FTP", "url": "ftp://example.com"}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "File", "url": "file:///etc/passwd"}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "Gopher", "url": "gopher://example.com"}).status_code == 422
+    assert (
+        auth_client.post("/monitors/", json={"name": "FTP", "url": "ftp://example.com"}).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/", json={"name": "File", "url": "file:///etc/passwd"}
+        ).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/", json={"name": "Gopher", "url": "gopher://example.com"}
+        ).status_code
+        == 422
+    )
 
     # Check interval boundary violations
-    assert auth_client.post("/monitors/", json={"name": "Low", "url": "https://example.com", "check_interval_seconds": 14}).status_code == 422
-    assert auth_client.post("/monitors/", json={"name": "High", "url": "https://example.com", "check_interval_seconds": 86401}).status_code == 422
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={"name": "Low", "url": "https://example.com", "check_interval_seconds": 14},
+        ).status_code
+        == 422
+    )
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={"name": "High", "url": "https://example.com", "check_interval_seconds": 86401},
+        ).status_code
+        == 422
+    )
 
     # Keep-alive inconsistencies
-    assert auth_client.post("/monitors/", json={
-        "name": "NoInterval",
-        "url": "https://example.com",
-        "mode": "keep_alive",
-        "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": None,
-    }).status_code == 422
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={
+                "name": "NoInterval",
+                "url": "https://example.com",
+                "mode": "keep_alive",
+                "keep_alive_enabled": True,
+                "keep_alive_interval_seconds": None,
+            },
+        ).status_code
+        == 422
+    )
 
-    assert auth_client.post("/monitors/", json={
-        "name": "LowKA",
-        "url": "https://example.com",
-        "mode": "keep_alive",
-        "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": 14,
-    }).status_code == 422
+    assert (
+        auth_client.post(
+            "/monitors/",
+            json={
+                "name": "LowKA",
+                "url": "https://example.com",
+                "mode": "keep_alive",
+                "keep_alive_enabled": True,
+                "keep_alive_interval_seconds": 14,
+            },
+        ).status_code
+        == 422
+    )
 
 
 def test_patch_monitor_partial_updates(auth_client: TestClient) -> None:
     """Verify PATCH /monitors/{id} updates only specified fields and leaves others untouched."""
     # Create initial monitor
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Initial Name",
-        "url": "https://patch-test.com",
-        "check_interval_seconds": 60,
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Initial Name",
+            "url": "https://patch-test.com",
+            "check_interval_seconds": 60,
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
@@ -1097,11 +1194,14 @@ def test_patch_monitor_partial_updates(auth_client: TestClient) -> None:
     assert r_int.json()["check_interval_seconds"] == 120
 
     # 3. Update keep-alive configuration
-    r_ka = auth_client.patch(f"/monitors/{mid}", json={
-        "mode": "monitor_and_keep_alive",
-        "keep_alive_enabled": True,
-        "keep_alive_interval_seconds": 300,
-    })
+    r_ka = auth_client.patch(
+        f"/monitors/{mid}",
+        json={
+            "mode": "monitor_and_keep_alive",
+            "keep_alive_enabled": True,
+            "keep_alive_interval_seconds": 300,
+        },
+    )
     assert r_ka.status_code == 200
     assert r_ka.json()["mode"] == "monitor_and_keep_alive"
     assert r_ka.json()["keep_alive_enabled"] is True
@@ -1113,26 +1213,32 @@ def test_patch_monitor_partial_updates(auth_client: TestClient) -> None:
     assert r_404.json() == {"detail": "Monitor not found"}
 
 
-
-def test_delete_monitor_cascade_deletes_ping_results_api(auth_client: TestClient, db_session) -> None:
+def test_delete_monitor_cascade_deletes_ping_results_api(
+    auth_client: TestClient, db_session
+) -> None:
     """Verify API DELETE /monitors/{id} deletes the monitor and cascades to delete all attached ping_results."""
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Cascade API Monitor",
-        "url": "https://cascade-api.com",
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Cascade API Monitor",
+            "url": "https://cascade-api.com",
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
     # Add 3 PingResult records for this monitor
     now = datetime.now(timezone.utc)
     for i in range(3):
-        db_session.add(PingResult(
-            monitor_id=mid,
-            check_type="monitor",
-            status_code=200,
-            latency_ms=25.0 + i,
-            checked_at=now,
-        ))
+        db_session.add(
+            PingResult(
+                monitor_id=mid,
+                check_type="monitor",
+                status_code=200,
+                latency_ms=25.0 + i,
+                checked_at=now,
+            )
+        )
     db_session.commit()
 
     # Verify rows exist
@@ -1149,23 +1255,28 @@ def test_delete_monitor_cascade_deletes_ping_results_api(auth_client: TestClient
 
 def test_get_monitor_results_pagination_bounds(auth_client: TestClient, db_session) -> None:
     """Verify GET /monitors/{id}/results validates pagination bounds (limit < 1 -> 422, limit > 500 -> 422)."""
-    create_resp = auth_client.post("/monitors/", json={
-        "name": "Pagination Bounds Monitor",
-        "url": "https://bounds.com",
-    })
+    create_resp = auth_client.post(
+        "/monitors/",
+        json={
+            "name": "Pagination Bounds Monitor",
+            "url": "https://bounds.com",
+        },
+    )
     assert create_resp.status_code == 201
     mid = create_resp.json()["id"]
 
     # Seed 10 PingResult entries
     now = datetime.now(timezone.utc)
     for i in range(10):
-        db_session.add(PingResult(
-            monitor_id=mid,
-            check_type="monitor",
-            status_code=200,
-            latency_ms=10.0 + i,
-            checked_at=now,
-        ))
+        db_session.add(
+            PingResult(
+                monitor_id=mid,
+                check_type="monitor",
+                status_code=200,
+                latency_ms=10.0 + i,
+                checked_at=now,
+            )
+        )
     db_session.commit()
 
     # limit=0 -> 422 (must be >= 1)

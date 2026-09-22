@@ -16,7 +16,9 @@ import sys
 from typing import Any, Generator
 
 # Asynchronous request context variable for log correlation
-request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
 
 # Valid Request ID regex: 8 to 64 alphanumeric, dash, or underscore characters
 REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9_-]{8,64}$")

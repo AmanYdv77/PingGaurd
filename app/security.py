@@ -20,10 +20,10 @@ async def require_api_key(
 ) -> str:
     """
     FastAPI dependency enforcing static API-key authentication.
-    
+
     Validates that the incoming request contains an 'X-API-Key' header that
     matches the configured API_KEY using secrets.compare_digest.
-    
+
     Raises:
         HTTPException: 401 Unauthorized if the header is missing or incorrect.
                        The key value is NEVER included in error text or logs.

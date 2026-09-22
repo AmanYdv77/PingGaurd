@@ -132,7 +132,7 @@ def _run_probe_task(
             )
 
             if dto.error_detail in TRANSIENT_ERRORS and task.request.retries < task.max_retries:
-                countdown = 2 ** task.request.retries
+                countdown = 2**task.request.retries
                 retry_log = (
                     "Transient network error on monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)..."
                     if check_type == "monitor"
@@ -197,7 +197,7 @@ def _run_probe_task(
 def execute_ping(self, monitor_id: int) -> dict[str, Any]:
     """
     Executes an uptime health probe for the specified monitor.
-    
+
     - Uses shared `robust_ping` powered by httpx.AsyncClient.
     - Enforces SSRF defense, DNS rebinding checks, and redirect interception.
     - Classifies outcomes into UP, DEGRADED, DOWN, UNREACHABLE.
@@ -224,7 +224,7 @@ def execute_ping(self, monitor_id: int) -> dict[str, Any]:
 def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
     """
     Executes an optional lightweight Keep-Alive activity ping for the specified monitor.
-    
+
     - Uses shared `robust_keep_alive` powered by httpx.AsyncClient.
     - Sends activity request to `url + keep_alive_path`.
     - Persists result to 'ping_results' with check_type='keep_alive'.
@@ -245,6 +245,7 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
 # Celery Beat Periodic Scheduling Heartbeat
 # =========================================================================
 
+
 @celery_app.task(
     bind=True,
     name="app.tasks.sweep_due_monitors",
@@ -257,7 +258,7 @@ def sweep_due_monitors(
 ) -> dict[str, int]:
     """
     Celery Beat Scheduling Heartbeat.
-    
+
     Decides WHEN health probes and keep-alive activities are due and enqueues them.
     Adheres strictly to the PingGuard architectural separation:
     - Beat/Sweep decides WHEN to check.
@@ -336,7 +337,10 @@ def sweep_due_monitors(
                         synchronize_session=False,
                     )
                     recovery_session.commit()
-                logger.info("Reset next_check_at to now for %d monitors due to broker error", len(failed_ids))
+                logger.info(
+                    "Reset next_check_at to now for %d monitors due to broker error",
+                    len(failed_ids),
+                )
             except Exception as rec_exc:
                 logger.critical("Failed to reset schedule during broker recovery: %s", rec_exc)
             break
@@ -372,7 +376,9 @@ def sweep_due_monitors(
                     )
                     continue
 
-                monitor.next_keep_alive_at = now + timedelta(seconds=monitor.keep_alive_interval_seconds)
+                monitor.next_keep_alive_at = now + timedelta(
+                    seconds=monitor.keep_alive_interval_seconds
+                )
                 batch_ka_items.append((monitor.id, monitor.keep_alive_interval_seconds))
 
             session.commit()
@@ -382,7 +388,9 @@ def sweep_due_monitors(
             try:
                 execute_keep_alive.apply_async(args=[m_id], expires=interval)
                 keep_alives_enqueued += 1
-                logger.info("Enqueued execute_keep_alive monitor_id=%s with expires=%s", m_id, interval)
+                logger.info(
+                    "Enqueued execute_keep_alive monitor_id=%s with expires=%s", m_id, interval
+                )
             except Exception as exc:
                 logger.error(
                     "Failed to enqueue execute_keep_alive monitor_id=%s: %s. Broker may be down.",
@@ -400,9 +408,14 @@ def sweep_due_monitors(
                         synchronize_session=False,
                     )
                     recovery_session.commit()
-                logger.info("Reset next_keep_alive_at to now for %d keep-alives due to broker error", len(failed_ka_ids))
+                logger.info(
+                    "Reset next_keep_alive_at to now for %d keep-alives due to broker error",
+                    len(failed_ka_ids),
+                )
             except Exception as rec_exc:
-                logger.critical("Failed to reset keep-alive schedule during broker recovery: %s", rec_exc)
+                logger.critical(
+                    "Failed to reset keep-alive schedule during broker recovery: %s", rec_exc
+                )
             break
 
     logger.info(
@@ -448,6 +461,7 @@ def prune_ping_results(batch_size: int | None = None) -> int:
             if deleted == 0:
                 break
 
-    logger.info("Pruned %d expired ping_result rows older than %s", total_deleted, cutoff.isoformat())
+    logger.info(
+        "Pruned %d expired ping_result rows older than %s", total_deleted, cutoff.isoformat()
+    )
     return total_deleted
-

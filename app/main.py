@@ -12,7 +12,17 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any
 import uuid
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import redis.asyncio as aioredis
@@ -131,7 +141,7 @@ async def check_redis_readiness() -> bool:
     "/health",
     tags=["System"],
     summary="Health check",
-    description="Returns the operational status of the PingGuard API service."
+    description="Returns the operational status of the PingGuard API service.",
 )
 async def health_check() -> dict[str, str]:
     """Basic service health check endpoint for container orchestrators and uptime probes."""
@@ -200,7 +210,7 @@ async def create_monitor(
 ) -> MonitorRead:
     """
     Asynchronously registers a target URL for monitoring and/or keep-alive in PostgreSQL.
-    
+
     - Validates payload via MonitorCreate schema.
     - Enforces keep-alive configuration consistency.
     - Persists durable row in the 'monitors' table with auto-generated ID.
@@ -248,7 +258,7 @@ async def get_monitor(
 ) -> MonitorRead:
     """
     Asynchronously fetches a monitor from PostgreSQL by its unique ID.
-    
+
     Raises HTTP 404 if the monitor does not exist.
     """
     monitor = await db.get(Monitor, monitor_id)
@@ -281,7 +291,7 @@ async def update_monitor(
 ) -> MonitorRead:
     """
     Asynchronously updates an existing monitor in PostgreSQL.
-    
+
     Supports both PATCH and PUT semantics. Fields omitted or set to None are preserved.
     Enforces configuration consistency across the merged monitor state.
     Raises HTTP 404 if the monitor does not exist, or HTTP 422 if the update creates an invalid state.
@@ -307,7 +317,9 @@ async def update_monitor(
     # Compute merged state for consistency validation
     target_mode = MonitorMode(update_data.get("mode", monitor.mode))
     target_keep_alive = update_data.get("keep_alive_enabled", monitor.keep_alive_enabled)
-    target_interval = update_data.get("keep_alive_interval_seconds", monitor.keep_alive_interval_seconds)
+    target_interval = update_data.get(
+        "keep_alive_interval_seconds", monitor.keep_alive_interval_seconds
+    )
     target_path = update_data.get("keep_alive_path", monitor.keep_alive_path)
 
     try:
@@ -350,7 +362,7 @@ async def list_monitors(
 ) -> list[MonitorRead]:
     """
     Asynchronously retrieves a paginated slice of monitors from PostgreSQL.
-    
+
     Guarded with default limit=100 to prevent unbounded database query memory allocation.
     """
     stmt = select(Monitor).order_by(Monitor.id.asc()).offset(skip).limit(limit)
@@ -393,7 +405,9 @@ async def get_monitor_results(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: Annotated[int, Query(description="Maximum results to return", ge=1, le=500)] = 50,
-    check_type: Annotated[str | None, Query(description="Filter by check_type ('monitor' or 'keep_alive')")] = None,
+    check_type: Annotated[
+        str | None, Query(description="Filter by check_type ('monitor' or 'keep_alive')")
+    ] = None,
 ) -> list[PingResultRead]:
     """
     Retrieves probe and keep-alive execution telemetry for charting and auditing.
@@ -419,7 +433,6 @@ async def get_monitor_results(
     dependencies=[Depends(rate_limit_write)],
     summary="Queue on-demand probe check (results appear via GET /monitors/{id}/results)",
     description=(
-
         "Enqueues an immediate health probe task for the specified monitor to Celery workers. "
         "Returns HTTP 202 Accepted immediately without performing outbound network I/O in the API. "
         "Historical and latest check results can be retrieved via GET /monitors/{monitor_id}/results."
@@ -446,4 +459,3 @@ async def trigger_monitor_check(
 
 
 app.include_router(router)
-

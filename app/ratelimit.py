@@ -18,7 +18,6 @@ logger = logging.getLogger("app.ratelimit")
 logger.disabled = False
 
 
-
 class RateLimiter(Protocol):
     """Protocol defining the rate limiter interface."""
 
@@ -131,7 +130,6 @@ async def rate_limit_write(
         logger.disabled = False
         logger.warning("Redis rate limiter check failed (%s); failing open.", exc)
         return
-
 
     if not allowed:
         raise HTTPException(

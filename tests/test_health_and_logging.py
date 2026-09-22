@@ -196,6 +196,7 @@ def test_live_database_readiness():
 def test_graceful_redis_readiness_failure():
     """Verify check_redis_readiness returns False when Redis is unreachable without raising."""
     from app.main import check_redis_readiness
+
     ready = asyncio.run(check_redis_readiness())
     assert isinstance(ready, bool)
 
@@ -203,6 +204,7 @@ def test_graceful_redis_readiness_failure():
 def test_credential_redaction_before_logging():
     """Ensure sensitive credentials in target URLs are safely redacted before logging."""
     from app.ssrf import redact_url_credentials
+
     raw_url = "https://user:verysecretpass@api.service.internal:8080/data"
     redacted = redact_url_credentials(raw_url)
     assert "verysecretpass" not in redacted

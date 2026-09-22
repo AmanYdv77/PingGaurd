@@ -33,7 +33,9 @@ def test_models_does_not_import_schemas() -> None:
     schemas_imports = [
         mod for mod in imported_modules if mod == "app.schemas" or mod.startswith("app.schemas.")
     ]
-    assert not schemas_imports, f"app/models.py illegally imports from API schemas layer: {schemas_imports}"
+    assert not schemas_imports, (
+        f"app/models.py illegally imports from API schemas layer: {schemas_imports}"
+    )
 
 
 def test_redundant_monitor_id_index_dropped_in_database() -> None:

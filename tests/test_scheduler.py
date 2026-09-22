@@ -164,7 +164,9 @@ def test_sweep_dual_mode_both_due(mock_ka_async: MagicMock, mock_ping_async: Mag
 
 @patch("app.tasks.execute_ping.apply_async")
 @patch("app.tasks.execute_keep_alive.apply_async")
-def test_sweep_dual_mode_independent_timing(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
+def test_sweep_dual_mode_independent_timing(
+    mock_ka_async: MagicMock, mock_ping_async: MagicMock
+) -> None:
     """Verify only the overdue schedule triggers when intervals differ."""
     now = datetime.now(timezone.utc)
     past_time = now - timedelta(seconds=10)
@@ -195,7 +197,9 @@ def test_sweep_dual_mode_independent_timing(mock_ka_async: MagicMock, mock_ping_
 
 @patch("app.tasks.execute_ping.apply_async")
 @patch("app.tasks.execute_keep_alive.apply_async")
-def test_sweep_keep_alive_disabled_never_enqueued(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
+def test_sweep_keep_alive_disabled_never_enqueued(
+    mock_ka_async: MagicMock, mock_ping_async: MagicMock
+) -> None:
     """Gatekeeper: If keep_alive_enabled=False, never enqueue keep-alive even if timestamp is past."""
     now = datetime.now(timezone.utc)
     past_time = now - timedelta(seconds=50)
@@ -275,7 +279,10 @@ def test_sweep_missed_schedules_no_catchup_storm(mock_async: MagicMock) -> None:
         assert abs(diff - 60.0) <= 5.0
 
 
-@patch("app.tasks.execute_ping.apply_async", side_effect=redis.exceptions.ConnectionError("Redis connection lost"))
+@patch(
+    "app.tasks.execute_ping.apply_async",
+    side_effect=redis.exceptions.ConnectionError("Redis connection lost"),
+)
 def test_sweep_redis_failure_recovers_schedule_to_now(mock_async: MagicMock) -> None:
     """
     Resilience (New Semantics):
@@ -329,11 +336,7 @@ def test_sweep_max_batches_bounds_sweep_runtime(mock_async: MagicMock) -> None:
 
     # The remaining 2 monitors must still be overdue and ready for next sweep
     with get_sync_db() as session:
-        remaining_due = (
-            session.query(Monitor)
-            .filter(Monitor.next_check_at <= now)
-            .count()
-        )
+        remaining_due = session.query(Monitor).filter(Monitor.next_check_at <= now).count()
         assert remaining_due == 2
 
 

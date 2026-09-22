@@ -23,11 +23,11 @@ SYNC_DATABASE_URL = settings.sync_database_url
 # Asynchronous SQLAlchemy Engine for FastAPI
 engine = create_async_engine(
     DATABASE_URL,
-    pool_pre_ping=True,      # Discards broken/stale pooled connections
-    pool_size=10,            # Sensible development pool size
-    max_overflow=20,         # Maximum overflow connections during surges
-    pool_recycle=1800,       # Recycle connections every 30 minutes
-    echo=False,              # Set to True for verbose SQL logging if debugging
+    pool_pre_ping=True,  # Discards broken/stale pooled connections
+    pool_size=10,  # Sensible development pool size
+    max_overflow=20,  # Maximum overflow connections during surges
+    pool_recycle=1800,  # Recycle connections every 30 minutes
+    echo=False,  # Set to True for verbose SQL logging if debugging
 )
 
 # Asynchronous Session Factory for FastAPI
@@ -42,7 +42,7 @@ AsyncSessionLocal = async_sessionmaker(
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency yielding an independent AsyncSession per request.
-    
+
     Guarantees automatic rollback on unhandled exceptions and cleans up
     the connection session when the request finishes.
     """
@@ -76,7 +76,7 @@ SyncSessionLocal = sessionmaker(
 def get_sync_db() -> Generator[Session, None, None]:
     """
     Context manager providing an isolated synchronous SQLAlchemy Session for Celery tasks.
-    
+
     Each background task executes within a controlled transaction:
     commits automatically on clean exit, rolls back on exceptions, and closes the session.
     """
