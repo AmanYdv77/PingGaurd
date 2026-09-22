@@ -44,9 +44,11 @@ class Settings(BaseSettings):
     redis_broker_url: str = "redis://localhost:6379/0"
     redis_result_backend_url: str = "redis://localhost:6379/1"
 
-    # 3. Celery Beat Periodic Sweep Frequency (seconds)
+    # 3. Celery Beat Periodic Sweep Frequency (seconds) & Batching
     sweep_interval_seconds: float = 15.0
     celerybeat_schedule_filename: str = "celerybeat-schedule"
+    sweep_batch_size: int = 500
+    sweep_max_batches: int = 20
 
     # 4. Network Resilience & HTTPX Prober Settings
     http_connect_timeout: float = 2.0
@@ -168,6 +170,8 @@ class Settings(BaseSettings):
         "max_monitors",
         "ping_results_retention_days",
         "retention_batch_size",
+        "sweep_batch_size",
+        "sweep_max_batches",
     )
     @classmethod
     def validate_positive_int(cls, v: int) -> int:

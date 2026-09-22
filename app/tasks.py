@@ -250,7 +250,11 @@ def execute_keep_alive(self, monitor_id: int) -> dict[str, Any]:
     name="app.tasks.sweep_due_monitors",
     ignore_result=True,
 )
-def sweep_due_monitors(self) -> dict[str, int]:
+def sweep_due_monitors(
+    self,
+    batch_size: int | None = None,
+    max_batches: int | None = None,
+) -> dict[str, int]:
     """
     Celery Beat Scheduling Heartbeat.
     
@@ -259,90 +263,147 @@ def sweep_due_monitors(self) -> dict[str, int]:
     - Beat/Sweep decides WHEN to check.
     - Celery Workers decide HOW to check.
     - Zero outbound HTTP requests are performed within this task.
+    - Batch-based bounded querying (sweep_batch_size, sweep_max_batches).
     - Concurrency-safe claiming via SELECT ... FOR UPDATE SKIP LOCKED.
-    - Missed schedules advance from `now` to prevent catch-up storms.
-    - Two independent schedules: monitoring (`next_check_at`) and keep-alive (`next_keep_alive_at`).
+    - Advance-and-commit BEFORE enqueueing to prevent duplicates.
+    - Task expiration passed to apply_async (expires=interval) to discard stale tasks.
+    - Automatic broker-error recovery: resets next_check_at to now in a new transaction.
+    - Two independent schedules: monitoring (next_check_at) and keep-alive (next_keep_alive_at).
     """
+    settings = get_settings()
+    b_size = batch_size if batch_size is not None else settings.sweep_batch_size
+    m_batches = max_batches if max_batches is not None else settings.sweep_max_batches
     now = datetime.now(timezone.utc)
-    logger.info("Scheduler sweep started at %s", now.isoformat())
+    logger.info(
+        "Scheduler sweep started at %s (batch_size=%d, max_batches=%d)",
+        now.isoformat(),
+        b_size,
+        m_batches,
+    )
 
     monitors_enqueued = 0
     keep_alives_enqueued = 0
 
-    with get_sync_db() as session:
-        # ---------------------------------------------------------------------
-        # Health Monitoring Due Sweep
-        # ---------------------------------------------------------------------
-        monitoring_modes = [MonitorMode.MONITOR.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
-        due_monitors = (
-            session.query(Monitor)
-            .filter(
-                Monitor.mode.in_(monitoring_modes),
-                Monitor.next_check_at <= now,
-            )
-            .with_for_update(skip_locked=True)
-            .all()
-        )
+    # -------------------------------------------------------------------------
+    # 1. Health Monitoring Due Sweep (Claim-Commit-then-Dispatch)
+    # -------------------------------------------------------------------------
+    monitoring_modes = [MonitorMode.MONITOR.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
 
-        for monitor in due_monitors:
-            logger.info("Monitor %s due for health check (next_check_at=%s)", monitor.id, monitor.next_check_at)
-            try:
-                execute_ping.delay(monitor.id)
-                monitors_enqueued += 1
+    for _ in range(m_batches):
+        batch_items: list[tuple[int, int]] = []
+        with get_sync_db() as session:
+            due_monitors = (
+                session.query(Monitor)
+                .filter(
+                    Monitor.mode.in_(monitoring_modes),
+                    Monitor.next_check_at <= now,
+                )
+                .order_by(Monitor.next_check_at.asc())
+                .limit(b_size)
+                .with_for_update(skip_locked=True)
+                .all()
+            )
+            if not due_monitors:
+                break
+
+            for monitor in due_monitors:
                 monitor.next_check_at = now + timedelta(seconds=monitor.check_interval_seconds)
-                logger.info(
-                    "Enqueued execute_ping monitor_id=%s, advanced next_check_at to %s",
-                    monitor.id,
-                    monitor.next_check_at,
-                )
-            except Exception as exc:
-                logger.error(
-                    "Failed to enqueue execute_ping monitor_id=%s: %s. Rolling back transaction.",
-                    monitor.id,
-                    exc,
-                )
-                raise
+                batch_items.append((monitor.id, monitor.check_interval_seconds))
 
-        # ---------------------------------------------------------------------
-        # Keep-Alive Activity Due Sweep
-        # ---------------------------------------------------------------------
-        keep_alive_modes = [MonitorMode.KEEP_ALIVE.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
-        due_keep_alives = (
-            session.query(Monitor)
-            .filter(
-                Monitor.keep_alive_enabled == True,
-                Monitor.mode.in_(keep_alive_modes),
-                Monitor.next_keep_alive_at <= now,
-            )
-            .with_for_update(skip_locked=True)
-            .all()
-        )
+            session.commit()
 
-        for monitor in due_keep_alives:
-            if not monitor.keep_alive_enabled or not monitor.keep_alive_interval_seconds:
-                logger.warning(
-                    "Keep-alive skipped monitor_id=%s reason=invalid_or_disabled_configuration",
-                    monitor.id,
-                )
-                continue
-
-            logger.info("Monitor %s due for keep_alive (next_keep_alive_at=%s)", monitor.id, monitor.next_keep_alive_at)
+        # Enqueue only AFTER the claim is committed
+        failed_ids: list[int] = []
+        for idx, (m_id, interval) in enumerate(batch_items):
             try:
-                execute_keep_alive.delay(monitor.id)
-                keep_alives_enqueued += 1
-                monitor.next_keep_alive_at = now + timedelta(seconds=monitor.keep_alive_interval_seconds)
-                logger.info(
-                    "Enqueued execute_keep_alive monitor_id=%s, advanced next_keep_alive_at to %s",
-                    monitor.id,
-                    monitor.next_keep_alive_at,
-                )
+                execute_ping.apply_async(args=[m_id], expires=interval)
+                monitors_enqueued += 1
+                logger.info("Enqueued execute_ping monitor_id=%s with expires=%s", m_id, interval)
             except Exception as exc:
                 logger.error(
-                    "Failed to enqueue execute_keep_alive monitor_id=%s: %s. Rolling back transaction.",
-                    monitor.id,
+                    "Failed to enqueue execute_ping monitor_id=%s: %s. Broker may be down.",
+                    m_id,
                     exc,
                 )
-                raise
+                failed_ids = [item[0] for item in batch_items[idx:]]
+                break
+
+        if failed_ids:
+            try:
+                with get_sync_db() as recovery_session:
+                    recovery_session.query(Monitor).filter(Monitor.id.in_(failed_ids)).update(
+                        {Monitor.next_check_at: now},
+                        synchronize_session=False,
+                    )
+                    recovery_session.commit()
+                logger.info("Reset next_check_at to now for %d monitors due to broker error", len(failed_ids))
+            except Exception as rec_exc:
+                logger.critical("Failed to reset schedule during broker recovery: %s", rec_exc)
+            break
+
+    # -------------------------------------------------------------------------
+    # 2. Keep-Alive Activity Due Sweep (Claim-Commit-then-Dispatch)
+    # -------------------------------------------------------------------------
+    keep_alive_modes = [MonitorMode.KEEP_ALIVE.value, MonitorMode.MONITOR_AND_KEEP_ALIVE.value]
+
+    for _ in range(m_batches):
+        batch_ka_items: list[tuple[int, int]] = []
+        with get_sync_db() as session:
+            due_keep_alives = (
+                session.query(Monitor)
+                .filter(
+                    Monitor.keep_alive_enabled.is_(True),
+                    Monitor.mode.in_(keep_alive_modes),
+                    Monitor.next_keep_alive_at <= now,
+                )
+                .order_by(Monitor.next_keep_alive_at.asc())
+                .limit(b_size)
+                .with_for_update(skip_locked=True)
+                .all()
+            )
+            if not due_keep_alives:
+                break
+
+            for monitor in due_keep_alives:
+                if not monitor.keep_alive_enabled or not monitor.keep_alive_interval_seconds:
+                    logger.warning(
+                        "Keep-alive skipped monitor_id=%s reason=invalid_or_disabled_configuration",
+                        monitor.id,
+                    )
+                    continue
+
+                monitor.next_keep_alive_at = now + timedelta(seconds=monitor.keep_alive_interval_seconds)
+                batch_ka_items.append((monitor.id, monitor.keep_alive_interval_seconds))
+
+            session.commit()
+
+        failed_ka_ids: list[int] = []
+        for idx, (m_id, interval) in enumerate(batch_ka_items):
+            try:
+                execute_keep_alive.apply_async(args=[m_id], expires=interval)
+                keep_alives_enqueued += 1
+                logger.info("Enqueued execute_keep_alive monitor_id=%s with expires=%s", m_id, interval)
+            except Exception as exc:
+                logger.error(
+                    "Failed to enqueue execute_keep_alive monitor_id=%s: %s. Broker may be down.",
+                    m_id,
+                    exc,
+                )
+                failed_ka_ids = [item[0] for item in batch_ka_items[idx:]]
+                break
+
+        if failed_ka_ids:
+            try:
+                with get_sync_db() as recovery_session:
+                    recovery_session.query(Monitor).filter(Monitor.id.in_(failed_ka_ids)).update(
+                        {Monitor.next_keep_alive_at: now},
+                        synchronize_session=False,
+                    )
+                    recovery_session.commit()
+                logger.info("Reset next_keep_alive_at to now for %d keep-alives due to broker error", len(failed_ka_ids))
+            except Exception as rec_exc:
+                logger.critical("Failed to reset keep-alive schedule during broker recovery: %s", rec_exc)
+            break
 
     logger.info(
         "Scheduler sweep completed. Enqueued %d health pings, %d keep-alive requests.",

@@ -331,6 +331,38 @@ def test_retention_settings_validation():
     assert "retention_batch_size" in str(exc_info.value)
 
 
+# =============================================================================
+# Task A17: Scheduler Sweep Batching & Throttling Settings Tests
+# =============================================================================
+
+def test_sweep_batching_settings_defaults():
+    """Verify sweep_batch_size and sweep_max_batches defaults."""
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.sweep_batch_size == 500
+    assert s.sweep_max_batches == 20
+
+
+def test_sweep_batching_settings_validation():
+    """Verify sweep batching settings reject non-positive integers."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            sweep_batch_size=0,
+        )
+    assert "sweep_batch_size" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            sweep_max_batches=0,
+        )
+    assert "sweep_max_batches" in str(exc_info.value)
+
+
 
 
 
