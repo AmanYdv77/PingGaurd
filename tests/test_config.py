@@ -363,6 +363,35 @@ def test_sweep_batching_settings_validation():
     assert "sweep_max_batches" in str(exc_info.value)
 
 
+def test_logging_settings_defaults():
+    """Verify log_level and log_json have expected defaults."""
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.log_level == "INFO"
+    assert s.log_json is True
+
+
+def test_logging_settings_validation():
+    """Verify log_level normalization and invalid value rejection."""
+    from app.config import Settings
+
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+        log_level="warning",
+        log_json=False,
+    )
+    assert s.log_level == "WARNING"
+    assert s.log_json is False
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            log_level="NOT_A_LEVEL",
+        )
+    assert "log_level" in str(exc_info.value)
+
+
 
 
 

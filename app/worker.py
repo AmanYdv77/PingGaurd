@@ -10,10 +10,18 @@ Configures the Celery distributed task queue backed by Redis:
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import setup_logging
 from app.config import get_settings
+from app.logging_config import configure_logging
 
 # Centralised application settings
 settings = get_settings()
+
+
+@setup_logging.connect
+def on_setup_logging(**kwargs):
+    """Align Celery worker logging with PingGuard structured JSON logging format."""
+    configure_logging(level=settings.log_level, json_logs=settings.log_json)
 REDIS_BROKER_URL = settings.redis_broker_url
 REDIS_RESULT_BACKEND_URL = settings.redis_result_backend_url
 
