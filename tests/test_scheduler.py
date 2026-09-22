@@ -67,13 +67,16 @@ class TestSchedulerSweep(unittest.TestCase):
         return mid
 
     def test_beat_schedule_configuration(self) -> None:
-        """Requirement: Celery Beat has exactly ONE static periodic sweep entry."""
+        """Verify Celery Beat static periodic task entries and absence of dynamic per-monitor entries."""
         beat_sched = celery_app.conf.beat_schedule
         self.assertIn("sweep-due-monitors", beat_sched)
         self.assertEqual(beat_sched["sweep-due-monitors"]["task"], "app.tasks.sweep_due_monitors")
         self.assertGreater(beat_sched["sweep-due-monitors"]["schedule"], 0)
-        # Ensure no per-monitor dynamic entries were created
-        self.assertEqual(len(beat_sched), 1)
+        self.assertIn("prune-ping-results", beat_sched)
+        self.assertEqual(beat_sched["prune-ping-results"]["task"], "app.tasks.prune_ping_results")
+        # Ensure only the static system tasks exist (no dynamic per-monitor entries created)
+        self.assertEqual(len(beat_sched), 2)
+
 
     @patch("app.tasks.execute_ping.delay")
     @patch("app.tasks.execute_keep_alive.delay")

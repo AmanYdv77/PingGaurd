@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     rate_limit_writes_per_minute: int = 60
     max_monitors: int = 100
 
+    # 7. Data Retention & Maintenance
+    ping_results_retention_days: int = 30
+    retention_batch_size: int = 10000
+
+
 
     @field_validator("api_key")
     @classmethod
@@ -161,6 +166,8 @@ class Settings(BaseSettings):
         "celery_hard_time_limit",
         "rate_limit_writes_per_minute",
         "max_monitors",
+        "ping_results_retention_days",
+        "retention_batch_size",
     )
     @classmethod
     def validate_positive_int(cls, v: int) -> int:
@@ -168,6 +175,7 @@ class Settings(BaseSettings):
         if v <= 0:
             raise ValueError("Value must be greater than zero")
         return v
+
 
 
     @field_validator("http_max_redirects")
