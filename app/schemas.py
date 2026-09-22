@@ -7,7 +7,11 @@ including the Optional Keep-Alive configuration.
 
 from datetime import datetime
 from enum import Enum
+import ipaddress
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+from app.ssrf import is_ip_blocked
+
 
 
 class MonitorStatus(str, Enum):
@@ -132,12 +136,11 @@ class MonitorCreate(BaseModel):
         if host in ("localhost", "localhost.localdomain"):
             raise ValueError(f"SSRF security violation: '{host}' is a forbidden loopback destination.")
         try:
-            import ipaddress
-            from app.net import is_ip_blocked
             ip_obj = ipaddress.ip_address(host)
             if is_ip_blocked(ip_obj):
                 raise ValueError(f"SSRF security violation: IP literal '{host}' is private or restricted.")
         except ValueError as err:
+
             if "SSRF security violation" in str(err):
                 raise
         return v

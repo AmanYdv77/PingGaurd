@@ -24,27 +24,14 @@ from app.net import (
     robust_ping,
 )
 from celery.exceptions import SoftTimeLimitExceeded
+from app.config import get_settings
 from app.schemas import MonitorMode, MonitorStatus
 from app.status import outcome_to_status
+from app.urls import safe_join_url
 from app.worker import celery_app
 
 logger = logging.getLogger(__name__)
 
-
-def safe_join_url(base_url: str, path: str | None) -> str:
-    """
-    Safely joins a base URL with an optional sub-path, avoiding duplicate slashes.
-    
-    Examples:
-        safe_join_url('https://xyz.com/', '/health') -> 'https://xyz.com/health'
-        safe_join_url('https://xyz.com', 'health')   -> 'https://xyz.com/health'
-        safe_join_url('https://xyz.com/api', None)   -> 'https://xyz.com/api'
-    """
-    if not path or not path.strip():
-        return base_url
-    base_clean = base_url.rstrip("/")
-    path_clean = "/" + path.strip().lstrip("/")
-    return f"{base_clean}{path_clean}"
 
 
 def save_ping_result(
@@ -430,9 +417,9 @@ def prune_ping_results(batch_size: int | None = None) -> int:
     Prunes ping_results older than ping_results_retention_days in small batches.
     Prevents unbounded table growth while avoiding long database table locks.
     """
-    from app.config import get_settings
     settings = get_settings()
     retention_days = settings.ping_results_retention_days
+
     batch_limit = batch_size if batch_size is not None else settings.retention_batch_size
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)

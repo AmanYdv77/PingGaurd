@@ -67,7 +67,3 @@ celery_app.conf.update(
     },
     beat_schedule_filename=settings.celerybeat_schedule_filename,
 )
-
-
-# Eagerly import task definitions to ensure immediate registration
-import app.tasks  # noqa: F401, E402

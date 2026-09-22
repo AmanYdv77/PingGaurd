@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Annotated, Any, Callable, Protocol
 from fastapi import Depends, HTTPException, Request, status
+import redis.asyncio as aioredis
 
 from app.config import get_settings
 
@@ -38,7 +39,6 @@ class RedisRateLimiter:
 
     async def _get_client(self) -> Any:
         if self._client is None:
-            import redis.asyncio as aioredis
             self._client = aioredis.from_url(self._redis_url, decode_responses=True)
         return self._client
 
