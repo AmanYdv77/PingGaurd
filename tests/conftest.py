@@ -60,10 +60,71 @@ def run_migrations():
 
 
 @pytest.fixture
+def client():
+    """Unauthenticated FastAPI TestClient."""
+    from fastapi.testclient import TestClient
+    import app.main
+    with TestClient(app.main.app) as c:
+        yield c
+
+
+@pytest.fixture
 def auth_client():
     """FastAPI TestClient pre-configured with the valid X-API-Key header."""
     from fastapi.testclient import TestClient
-    from app.main import app
-    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as client:
-        yield client
+    import app.main
+    with TestClient(app.main.app, headers={"X-API-Key": TEST_API_KEY}) as c:
+        yield c
+
+
+@pytest.fixture
+def db_session():
+    """Synchronous SQLAlchemy Session connected to the test database."""
+    from app.db import get_sync_db
+    with get_sync_db() as session:
+        yield session
+
+
+@pytest.fixture(autouse=True)
+def cleanup_database():
+    """Truncate tables before each test run against the verified test database."""
+    from sqlalchemy import text
+    from app.db import sync_engine
+    with sync_engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE ping_results, monitors RESTART IDENTITY CASCADE;"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def setup_db_override():
+    """Ensure FastAPI uses NullPool async engine and InMemoryRateLimiter for tests."""
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.db import DATABASE_URL, get_db
+    from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+    import app.main
+
+    test_async_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    test_session_local = async_sessionmaker(
+        bind=test_async_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+    async def override_get_db():
+        async with test_session_local() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+
+    app.main.app.dependency_overrides[get_db] = override_get_db
+    app.main.app.dependency_overrides[get_rate_limiter] = lambda: InMemoryRateLimiter()
+    yield
+    app.main.app.dependency_overrides.clear()
+
 

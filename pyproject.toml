@@ -23,3 +23,9 @@ httpx = "^0.28.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests requiring PostgreSQL or Redis services",
+]
