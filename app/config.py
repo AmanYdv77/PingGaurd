@@ -73,6 +73,22 @@ class Settings(BaseSettings):
     ping_results_retention_days: int = 30
     retention_batch_size: int = 10000
 
+    # 8. Structured Logging
+    log_level: str = "INFO"
+    log_json: bool = True
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def validate_log_level(cls, v: Any) -> str:
+        """Validate log level string and normalize to uppercase."""
+        if not isinstance(v, str):
+            raise ValueError("log_level must be a string")
+        norm = v.strip().upper()
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if norm not in valid_levels:
+            raise ValueError(f"Invalid log level: {v}. Must be one of: {', '.join(sorted(valid_levels))}")
+        return norm
+
 
 
     @field_validator("api_key")

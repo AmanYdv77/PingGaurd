@@ -6,17 +6,23 @@ FastAPI application entry point implementing asynchronous REST endpoints for
 monitor registration, retrieval, update, listing, and on-demand checks.
 """
 
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, status
+from typing import Annotated, Any
+import uuid
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
+from fastapi.responses import JSONResponse
+import redis.asyncio as aioredis
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
 from app.config import get_settings
-from app.db import get_db
+from app.db import engine, get_db
+from app.logging_config import REQUEST_ID_REGEX, configure_logging, request_id_var
 from app.models import Monitor, PingResult
 from app.ratelimit import rate_limit_write
 from app.security import require_api_key
@@ -31,6 +37,16 @@ from app.schemas import (
     PingResultRead,
     validate_keep_alive_rules,
 )
+
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize structured logging on application startup."""
+    configure_logging(level=settings.log_level, json_logs=settings.log_json)
+    yield
+
 
 # Application metadata for OpenAPI /docs and /redoc
 app = FastAPI(
@@ -47,9 +63,31 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
-settings = get_settings()
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """
+    Middleware injecting correlated request ID.
+    Accepts valid incoming X-Request-ID header, otherwise generates new UUID hex.
+    """
+    incoming = request.headers.get("X-Request-ID")
+    if incoming and REQUEST_ID_REGEX.match(incoming):
+        req_id = incoming
+    else:
+        req_id = uuid.uuid4().hex
+
+    token = request_id_var.set(req_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+    finally:
+        request_id_var.reset(token)
+
+
 if settings.cors_allowed_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -59,6 +97,34 @@ if settings.cors_allowed_origins:
         allow_headers=["Content-Type", "X-API-Key"],
         max_age=600,
     )
+
+
+async def check_database_readiness(session: AsyncSession | None = None) -> bool:
+    """Probe PostgreSQL database using async session or engine with 2-second timeout."""
+    try:
+        async with asyncio.timeout(2.0):
+            if session is not None:
+                await session.execute(text("SELECT 1"))
+            else:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+async def check_redis_readiness() -> bool:
+    """Probe Redis broker using PING with 2-second timeout."""
+    try:
+        async with asyncio.timeout(2.0):
+            client = aioredis.from_url(settings.redis_broker_url)
+            try:
+                await client.ping()
+            finally:
+                await client.aclose()
+        return True
+    except Exception:
+        return False
 
 
 @app.get(
@@ -74,6 +140,40 @@ async def health_check() -> dict[str, str]:
         "service": "PingGuard API",
         "version": __version__,
     }
+
+
+@app.get(
+    "/ready",
+    tags=["System"],
+    summary="Readiness check",
+    description="Verifies operational connectivity to database and Redis dependencies.",
+)
+async def readiness_check(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JSONResponse:
+    """
+    Readiness check validating downstream PostgreSQL and Redis connectivity.
+    Returns HTTP 200 {'status': 'ready'} on full health,
+    or HTTP 503 {'status': 'not_ready', 'failed': [...]} on dependency failure.
+    """
+    db_ok, redis_ok = await asyncio.gather(
+        check_database_readiness(db),
+        check_redis_readiness(),
+    )
+
+    if db_ok and redis_ok:
+        return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
+
+    failed: list[str] = []
+    if not db_ok:
+        failed.append("database")
+    if not redis_ok:
+        failed.append("redis")
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"status": "not_ready", "failed": failed},
+    )
 
 
 router = APIRouter(
