@@ -16,16 +16,15 @@ from sqlalchemy.orm import Session
 
 from app.db import get_sync_db
 
+from app.enums import MonitorMode, MonitorStatus, PingOutcome
 from app.models import Monitor, PingResult
 from app.net import (
-    PingOutcome,
     PingResultDTO,
     robust_keep_alive,
     robust_ping,
 )
 from celery.exceptions import SoftTimeLimitExceeded
 from app.config import get_settings
-from app.schemas import MonitorMode, MonitorStatus
 from app.status import outcome_to_status
 from app.urls import safe_join_url
 from app.worker import celery_app

@@ -7,7 +7,6 @@ streaming response bounds, monotonic latency tracking, and structured outcome cl
 
 import asyncio
 from dataclasses import dataclass
-from enum import Enum
 import inspect
 import ipaddress
 import logging
@@ -19,19 +18,13 @@ from typing import Any, Callable
 
 import httpx
 from app.config import get_settings
+from app.enums import PingOutcome
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
 # 1. Result DTOs & Outcomes
 # =============================================================================
-
-class PingOutcome(str, Enum):
-    """Classification of the network probe outcome."""
-    UP = "up"
-    DEGRADED = "degraded"
-    DOWN = "down"
-    UNREACHABLE = "unreachable"
 
 
 @dataclass(frozen=True)

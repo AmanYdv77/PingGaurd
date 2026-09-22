@@ -5,8 +5,7 @@ Provides a centralised, exhaustive mapping from low-level network probe outcomes
 (PingOutcome) to user-facing monitor lifecycle statuses (MonitorStatus).
 """
 
-from app.net import PingOutcome
-from app.schemas import MonitorStatus
+from app.enums import MonitorStatus, PingOutcome
 
 OUTCOME_TO_STATUS: dict[PingOutcome, MonitorStatus] = {
     PingOutcome.UP: MonitorStatus.UP,

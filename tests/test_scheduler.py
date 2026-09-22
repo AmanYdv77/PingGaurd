@@ -12,7 +12,7 @@ import redis
 
 from app.db import DATABASE_URL, SyncSessionLocal, get_sync_db
 from app.models import Monitor, PingResult
-from app.schemas import MonitorMode, MonitorStatus
+from app.enums import MonitorMode, MonitorStatus
 from app.tasks import execute_keep_alive, execute_ping, sweep_due_monitors
 from app.worker import celery_app
 

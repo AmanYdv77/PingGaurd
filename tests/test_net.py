@@ -10,9 +10,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 import httpx
 
+from app.enums import PingOutcome
 from app.net import (
     DNSResolutionError,
-    PingOutcome,
     PingResultDTO,
     SSRFBlockedError,
     perform_http_probe,

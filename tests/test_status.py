@@ -3,8 +3,7 @@ Unit tests for outcome to status mapping in app.status.
 """
 
 import pytest
-from app.net import PingOutcome
-from app.schemas import MonitorStatus
+from app.enums import MonitorStatus, PingOutcome
 from app.status import outcome_to_status
 
 

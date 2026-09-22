@@ -86,3 +86,11 @@ def test_ssrf_module_exists():
     """Verify app/ssrf.py exists and exports is_ip_blocked."""
     from app.ssrf import is_ip_blocked
     assert callable(is_ip_blocked)
+
+
+def test_enums_pure_module_exists():
+    """Verify app/enums.py exists and exports MonitorStatus, MonitorMode, PingOutcome."""
+    from app.enums import MonitorMode, MonitorStatus, PingOutcome
+    assert issubclass(MonitorMode, str)
+    assert issubclass(MonitorStatus, str)
+    assert issubclass(PingOutcome, str)
