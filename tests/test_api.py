@@ -995,7 +995,173 @@ class TestCorsConfiguration(unittest.TestCase):
                     del sys.modules[mod]
 
 
+class TestRateLimitAndMonitorCap(unittest.TestCase):
+    def setUp(self) -> None:
+        app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(app, headers={"X-API-Key": TEST_API_KEY})
+
+        # Truncate tables for a clean slate
+        sync_url = _get_pg_conn_str(DATABASE_URL)
+        conn = psycopg2.connect(sync_url)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE ping_results, monitors RESTART IDENTITY CASCADE;")
+        cur.close()
+        conn.close()
+
+    def tearDown(self) -> None:
+        from app.ratelimit import get_rate_limiter
+        if get_rate_limiter in app.dependency_overrides:
+            del app.dependency_overrides[get_rate_limiter]
+
+    def test_write_rate_limit_allowed_under_limit(self) -> None:
+        """Write requests within the limit succeed."""
+        from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+        limiter = InMemoryRateLimiter()
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        for i in range(3):
+            resp = self.client.post("/monitors/", json={"name": f"M{i}", "url": f"https://m{i}.com"})
+            self.assertEqual(resp.status_code, 201)
+
+    def test_write_rate_limit_429_over_limit(self) -> None:
+        """Exceeding write rate limit returns HTTP 429 with Retry-After header."""
+        from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+        limiter = InMemoryRateLimiter()
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        # Configure custom limit in settings
+        from app.config import get_settings
+        settings = get_settings()
+        limit = settings.rate_limit_writes_per_minute
+
+        # Simulate exhausting the limit
+        for i in range(limit):
+            resp = self.client.post("/monitors/", json={"name": f"M{i}", "url": f"https://m{i}.com"})
+            self.assertEqual(resp.status_code, 201)
+
+        # The limit + 1 request must fail with 429
+        blocked = self.client.post("/monitors/", json={"name": "Over", "url": "https://over.com"})
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.json(), {"detail": "rate limit exceeded"})
+        self.assertIn("retry-after", blocked.headers)
+        retry_after = int(blocked.headers["retry-after"])
+        self.assertGreater(retry_after, 0)
+
+    def test_write_rate_limit_window_reset(self) -> None:
+        """Injectable clock advancing beyond window_seconds resets the limit without sleeps."""
+        from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+        current_time = [1000.0]
+        limiter = InMemoryRateLimiter(clock=lambda: current_time[0])
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        from app.config import get_settings
+        limit = get_settings().rate_limit_writes_per_minute
+
+        for i in range(limit):
+            resp = self.client.post("/monitors/", json={"name": f"M{i}", "url": f"https://m{i}.com"})
+            self.assertEqual(resp.status_code, 201)
+
+        # Blocked at limit
+        resp = self.client.post("/monitors/", json={"name": "Blocked", "url": "https://blocked.com"})
+        self.assertEqual(resp.status_code, 429)
+
+        # Advance clock by 61 seconds
+        current_time[0] += 61.0
+
+        # Now allowed again
+        resp2 = self.client.post("/monitors/", json={"name": "AllowedAfterReset", "url": "https://reset.com"})
+        self.assertEqual(resp2.status_code, 201)
+
+    def test_write_rate_limit_redis_failure_fails_open(self) -> None:
+        """When Redis encounters an error, rate limiter fails open with logged warning."""
+        from app.ratelimit import RateLimiter, get_rate_limiter, logger as rl_logger
+        import redis.exceptions
+
+        class FailingRedisLimiter:
+            async def hit(self, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
+                raise redis.exceptions.ConnectionError("Redis connection lost")
+
+        app.dependency_overrides[get_rate_limiter] = lambda: FailingRedisLimiter()
+        rl_logger.disabled = False
+
+        with self.assertLogs("app.ratelimit", level="WARNING") as log_context:
+            resp = self.client.post("/monitors/", json={"name": "FailOpen", "url": "https://failopen.com"})
+            self.assertEqual(resp.status_code, 201)
+
+        self.assertTrue(any("fail open" in msg.lower() or "redis" in msg.lower() for msg in log_context.output))
+
+
+
+
+
+
+    def test_get_endpoints_not_rate_limited(self) -> None:
+        """GET endpoints are not subject to write rate limits."""
+        from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+        limiter = InMemoryRateLimiter()
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        # Create one monitor
+        resp = self.client.post("/monitors/", json={"name": "M1", "url": "https://m1.com"})
+        self.assertEqual(resp.status_code, 201)
+        mid = resp.json()["id"]
+
+        from app.config import get_settings
+        limit = get_settings().rate_limit_writes_per_minute
+
+        # Exhaust write limit
+        for i in range(limit - 1):
+            self.client.post("/monitors/", json={"name": f"M{i}", "url": f"https://m{i}.com"})
+
+        # Write is now blocked
+        write_resp = self.client.post("/monitors/", json={"name": "Exceeded", "url": "https://exceeded.com"})
+        self.assertEqual(write_resp.status_code, 429)
+
+        # GET /monitors/ and GET /monitors/{id} must still return 200
+        get_list_resp = self.client.get("/monitors/")
+        self.assertEqual(get_list_resp.status_code, 200)
+
+        get_one_resp = self.client.get(f"/monitors/{mid}")
+        self.assertEqual(get_one_resp.status_code, 200)
+
+    def test_monitor_cap_enforced(self) -> None:
+        """Creating monitors beyond max_monitors returns HTTP 409 with 'monitor limit reached'."""
+        import os
+        from app.config import get_settings
+        from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
+
+        # Use an in-memory limiter with large capacity so rate limit doesn't interfere
+        limiter = InMemoryRateLimiter()
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        old_cap = os.environ.get("MAX_MONITORS")
+        os.environ["MAX_MONITORS"] = "2"
+        get_settings.cache_clear()
+
+        try:
+            # 1st monitor -> OK
+            r1 = self.client.post("/monitors/", json={"name": "M1", "url": "https://m1.com"})
+            self.assertEqual(r1.status_code, 201)
+
+            # 2nd monitor -> OK (count is now 2)
+            r2 = self.client.post("/monitors/", json={"name": "M2", "url": "https://m2.com"})
+            self.assertEqual(r2.status_code, 201)
+
+            # 3rd monitor -> 409 Conflict
+            r3 = self.client.post("/monitors/", json={"name": "M3", "url": "https://m3.com"})
+            self.assertEqual(r3.status_code, 409)
+            self.assertEqual(r3.json(), {"detail": "monitor limit reached"})
+        finally:
+            if old_cap is not None:
+                os.environ["MAX_MONITORS"] = old_cap
+            else:
+                os.environ.pop("MAX_MONITORS", None)
+            get_settings.cache_clear()
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
