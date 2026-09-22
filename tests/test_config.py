@@ -303,6 +303,35 @@ def test_rate_limit_and_monitor_cap_positive_validation():
     assert "max_monitors" in str(exc_info.value)
 
 
+def test_retention_settings_defaults():
+    """Verify ping_results_retention_days and retention_batch_size defaults."""
+    from app.config import Settings
+
+    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    assert s.ping_results_retention_days == 30
+    assert s.retention_batch_size == 10000
+
+
+def test_retention_settings_validation():
+    """Verify retention settings reject values less than 1."""
+    from app.config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            ping_results_retention_days=0,
+        )
+    assert "ping_results_retention_days" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test",
+            retention_batch_size=0,
+        )
+    assert "retention_batch_size" in str(exc_info.value)
+
+
+
 
 
 

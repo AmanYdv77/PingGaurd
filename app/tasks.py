@@ -11,9 +11,11 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db import get_sync_db
+
 from app.models import Monitor, PingResult
 from app.net import (
     PingOutcome,
@@ -420,3 +422,40 @@ def sweep_due_monitors(self) -> dict[str, int]:
         "monitors_enqueued": monitors_enqueued,
         "keep_alives_enqueued": keep_alives_enqueued,
     }
+
+
+@celery_app.task(name="app.tasks.prune_ping_results", ignore_result=True, acks_late=True)
+def prune_ping_results(batch_size: int | None = None) -> int:
+    """
+    Prunes ping_results older than ping_results_retention_days in small batches.
+    Prevents unbounded table growth while avoiding long database table locks.
+    """
+    from app.config import get_settings
+    settings = get_settings()
+    retention_days = settings.ping_results_retention_days
+    batch_limit = batch_size if batch_size is not None else settings.retention_batch_size
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    total_deleted = 0
+
+    with get_sync_db() as session:
+        while True:
+            subq = (
+                select(PingResult.id)
+                .where(PingResult.checked_at < cutoff)
+                .order_by(PingResult.id)
+                .limit(batch_limit)
+                .scalar_subquery()
+            )
+            stmt = delete(PingResult).where(PingResult.id.in_(subq))
+            result = session.execute(stmt)
+            session.commit()
+
+            deleted = result.rowcount
+            total_deleted += deleted
+            if deleted == 0:
+                break
+
+    logger.info("Pruned %d expired ping_result rows older than %s", total_deleted, cutoff.isoformat())
+    return total_deleted
+

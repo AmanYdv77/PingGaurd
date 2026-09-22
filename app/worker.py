@@ -9,6 +9,7 @@ Configures the Celery distributed task queue backed by Redis:
 """
 
 from celery import Celery
+from celery.schedules import crontab
 from app.config import get_settings
 
 # Centralised application settings
@@ -52,16 +53,21 @@ celery_app.conf.update(
     task_track_started=True,
 
     # Celery Beat Periodic Scheduling Heartbeat
-    # Exactly ONE static periodic sweep entry querying PostgreSQL for due work.
-    # No dynamic per-monitor entries are defined here to prevent config churn.
+    # Sweep task queries PostgreSQL for due work.
+    # Prune task cleans up expired ping_result rows daily at 03:00 UTC.
     beat_schedule={
         "sweep-due-monitors": {
             "task": "app.tasks.sweep_due_monitors",
             "schedule": settings.sweep_interval_seconds,
-        }
+        },
+        "prune-ping-results": {
+            "task": "app.tasks.prune_ping_results",
+            "schedule": crontab(hour=3, minute=0),
+        },
     },
     beat_schedule_filename=settings.celerybeat_schedule_filename,
 )
+
 
 # Eagerly import task definitions to ensure immediate registration
 import app.tasks  # noqa: F401, E402
