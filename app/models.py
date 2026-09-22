@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.schemas import MonitorMode, MonitorStatus
+from app.enums import MonitorMode, MonitorStatus
 
 
 class Base(DeclarativeBase):
@@ -85,7 +85,6 @@ class PingResult(Base):
         Integer,
         ForeignKey("monitors.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     check_type: Mapped[str] = mapped_column(
         String(20),

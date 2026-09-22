@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from app.db import DATABASE_URL, get_db
 from app.main import app
 from app.models import Monitor, PingResult
-from app.schemas import MonitorMode, MonitorStatus
+from app.enums import MonitorMode, MonitorStatus
 from tests.conftest import TEST_API_KEY
 
 # Use NullPool for tests so each request in TestClient gets a connection on its current event loop

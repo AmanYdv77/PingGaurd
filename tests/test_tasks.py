@@ -9,8 +9,8 @@ import psycopg2
 
 from app.db import DATABASE_URL, get_sync_db
 from app.models import Monitor, PingResult
-from app.net import PingOutcome, PingResultDTO
-from app.schemas import MonitorMode, MonitorStatus
+from app.enums import MonitorMode, MonitorStatus, PingOutcome
+from app.net import PingResultDTO
 from app.tasks import execute_keep_alive, execute_ping, safe_join_url
 from app.worker import celery_app
 

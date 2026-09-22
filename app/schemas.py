@@ -6,43 +6,11 @@ including the Optional Keep-Alive configuration.
 """
 
 from datetime import datetime
-from enum import Enum
 import ipaddress
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from app.enums import MonitorMode, MonitorStatus
 from app.ssrf import is_ip_blocked
-
-
-
-class MonitorStatus(str, Enum):
-    """
-    Lifecycle status of a target monitor.
-    
-    - PENDING: Monitor is newly registered and awaiting its first scheduled probe.
-    - UP: Endpoint responded successfully within latency and status criteria.
-    - DEGRADED: Endpoint responded with client/edge error (e.g. 4xx) or high latency.
-    - DOWN: Endpoint returned server error (5xx) or probe failed across retries.
-    """
-    UP = "up"
-    DEGRADED = "degraded"
-    DOWN = "down"
-    PENDING = "pending"
-
-
-class MonitorMode(str, Enum):
-    """
-    Operational mode of the registered monitor.
-    
-    - MONITOR: Standard uptime and health checking only.
-    - KEEP_ALIVE: Periodic lightweight activity intended to wake/keep an idle-prone service active.
-    - MONITOR_AND_KEEP_ALIVE: Combines health monitoring and periodic keep-alive activity.
-    
-    NOTE: Keep-alive is an optional capability and acts as an activity/wake-up attempt;
-    it is not a guarantee against provider-enforced idle termination.
-    """
-    MONITOR = "monitor"
-    KEEP_ALIVE = "keep_alive"
-    MONITOR_AND_KEEP_ALIVE = "monitor_and_keep_alive"
 
 
 def validate_relative_path(v: str | None) -> str | None:
