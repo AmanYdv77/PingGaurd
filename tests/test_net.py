@@ -6,6 +6,7 @@ import asyncio
 import os
 import socket
 import ssl
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import httpx
@@ -359,6 +360,67 @@ class TestNetworkResilience(unittest.TestCase):
         self.assertEqual(res.outcome, PingOutcome.UNREACHABLE)
         self.assertEqual(res.error_detail, "total_timeout")
         self.assertLess(elapsed, 2.5)
+
+    def test_latency_excludes_body_streaming_time(self) -> None:
+        """
+        Verify latency_ms measures time-to-response-headers only.
+        Server sends headers immediately, then sleeps for 1.0s before sending body.
+        Assert latency_ms < 500 while total elapsed >= 1.0s.
+        """
+        async def _run_test():
+            async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+                try:
+                    await reader.read(1024)
+                    headers = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/plain\r\n"
+                        b"Content-Length: 5\r\n"
+                        b"Connection: close\r\n\r\n"
+                    )
+                    writer.write(headers)
+                    await writer.drain()
+
+                    await asyncio.sleep(1.0)
+                    writer.write(b"hello")
+                    await writer.drain()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+            server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
+            host, port = server.sockets[0].getsockname()
+            url = f"http://127.0.0.1:{port}/"
+
+            async with server:
+                server_task = asyncio.create_task(server.serve_forever())
+                try:
+                    t0 = time.monotonic()
+                    res = await perform_http_probe(
+                        url=url,
+                        read_timeout=3.0,
+                        allow_loopback=True,
+                        total_timeout=5.0,
+                    )
+                    elapsed = time.monotonic() - t0
+                    return res, elapsed
+                finally:
+                    server_task.cancel()
+                    try:
+                        await server_task
+                    except asyncio.CancelledError:
+                        pass
+
+        res, elapsed = asyncio.run(_run_test())
+        self.assertEqual(res.outcome, PingOutcome.UP)
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNotNone(res.latency_ms)
+        self.assertLess(res.latency_ms, 500)
+        self.assertGreaterEqual(elapsed, 1.0)
 
     # =========================================================================
     # Task A9: DNS-Rebinding & IP Pinning Tests

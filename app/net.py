@@ -19,6 +19,7 @@ from typing import Any, Callable
 import httpx
 from app.config import get_settings
 from app.enums import PingOutcome
+from app.status import classify_status_code
 
 logger = logging.getLogger(__name__)
 
@@ -430,31 +431,38 @@ async def perform_http_probe(
                             request_kwargs["extensions"] = extensions
 
                         # Step 3: Stream request to pinned IP
-                        async with client.stream("GET", pinned_url, **request_kwargs) as response:
-                            if response.is_redirect or (response.status_code in (301, 302, 303, 307, 308) and "Location" in response.headers):
-                                if redirect_count >= max_redirs:
-                                    raise httpx.TooManyRedirects(
-                                        f"Exceeded maximum allowed redirects ({max_redirs})"
-                                    )
-                                location = response.headers.get("Location")
-                                if not location:
-                                    status_code = response.status_code
-                                    final_url = current_url
-                                    break
+                        request = client.build_request("GET", pinned_url, **request_kwargs)
+                        t0 = time.monotonic()
+                        response = await client.send(request, stream=True)
+                        t1 = time.monotonic()
+                        latency_ms = round((t1 - t0) * 1000)
 
-                                next_url = urllib.parse.urljoin(current_url, location.strip())
-                                next_parsed = urllib.parse.urlsplit(next_url)
-                                if next_parsed.scheme.lower() not in ("http", "https"):
-                                    raise SSRFBlockedError(f"Unsupported redirect scheme '{next_parsed.scheme}'.")
+                        if response.is_redirect or (response.status_code in (301, 302, 303, 307, 308) and "Location" in response.headers):
+                            await response.aclose()
+                            if redirect_count >= max_redirs:
+                                raise httpx.TooManyRedirects(
+                                    f"Exceeded maximum allowed redirects ({max_redirs})"
+                                )
+                            location = response.headers.get("Location")
+                            if not location:
+                                status_code = response.status_code
+                                final_url = current_url
+                                break
 
-                                current_url = next_url
-                                redirect_count += 1
-                                continue
+                            next_url = urllib.parse.urljoin(current_url, location.strip())
+                            next_parsed = urllib.parse.urlsplit(next_url)
+                            if next_parsed.scheme.lower() not in ("http", "https"):
+                                raise SSRFBlockedError(f"Unsupported redirect scheme '{next_parsed.scheme}'.")
 
-                            status_code = response.status_code
-                            final_url = current_url
+                            current_url = next_url
+                            redirect_count += 1
+                            continue
 
-                            # Memory-bounded streaming: stop reading if body exceeds max_response_bytes
+                        status_code = response.status_code
+                        final_url = current_url
+
+                        # Memory-bounded streaming: stop reading if body exceeds max_response_bytes
+                        try:
                             async for chunk in response.aiter_bytes():
                                 bytes_read += len(chunk)
                                 if bytes_read > max_bytes:
@@ -464,15 +472,16 @@ async def perform_http_probe(
                                         max_bytes,
                                     )
                                     break
-                            break
-
-                latency_ms = round((time.monotonic() - start_mono) * 1000, 2)
+                        finally:
+                            await response.aclose()
+                        break
 
                 # Step 4: Status code classification
-                if status_code is not None and 200 <= status_code < 400:
-                    outcome = PingOutcome.UP
-                elif status_code is not None and 400 <= status_code < 500:
-                    outcome = PingOutcome.DEGRADED
+                if status_code is not None:
+                    try:
+                        outcome = classify_status_code(status_code)
+                    except ValueError:
+                        outcome = PingOutcome.DOWN
                 else:
                     outcome = PingOutcome.DOWN
 

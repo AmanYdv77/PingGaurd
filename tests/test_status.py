@@ -27,3 +27,31 @@ def test_outcome_to_status_unhandled_raises():
     """Verify an unexpected/unhandled outcome raises ValueError."""
     with pytest.raises(ValueError):
         outcome_to_status("not-an-outcome")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "code,expected_outcome",
+    [
+        (199, PingOutcome.UP),
+        (200, PingOutcome.UP),
+        (399, PingOutcome.UP),
+        (400, PingOutcome.DEGRADED),
+        (499, PingOutcome.DEGRADED),
+        (500, PingOutcome.DOWN),
+        (599, PingOutcome.DOWN),
+    ],
+)
+def test_classify_status_code_boundaries(code: int, expected_outcome: PingOutcome):
+    """Verify HTTP status code classification against required boundary codes."""
+    from app.status import classify_status_code
+
+    assert classify_status_code(code) == expected_outcome
+
+
+@pytest.mark.parametrize("invalid_code", [99, 600, -1, 1000])
+def test_classify_status_code_invalid_raises(invalid_code: int):
+    """Verify non-standard HTTP status codes raise ValueError."""
+    from app.status import classify_status_code
+
+    with pytest.raises(ValueError):
+        classify_status_code(invalid_code)
