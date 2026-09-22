@@ -45,11 +45,23 @@ class MonitorMode(str, Enum):
     MONITOR_AND_KEEP_ALIVE = "monitor_and_keep_alive"
 
 
+def validate_relative_path(v: str | None) -> str | None:
+    """Validates that a relative endpoint path starts with '/' and is not an absolute URL."""
+    if v is None:
+        return None
+    if not v.startswith("/"):
+        raise ValueError("keep_alive_path must begin with '/' and be a relative path")
+    if v.startswith("//") or "://" in v:
+        raise ValueError("keep_alive_path must be a relative path, not an absolute URL")
+    return v
+
+
 def validate_keep_alive_rules(
     mode: MonitorMode | None,
     keep_alive_enabled: bool | None,
     keep_alive_interval_seconds: int | None,
-    keep_alive_path: str | None,
+    keep_alive_path: str | None = None,
+    check_path_on_disable: bool = True,
 ) -> None:
     """
     Central validation helper for consistency between mode, keep_alive_enabled,
@@ -68,7 +80,7 @@ def validate_keep_alive_rules(
     elif keep_alive_enabled is False:
         if keep_alive_interval_seconds is not None:
             raise ValueError("keep_alive_interval_seconds must be None when keep_alive_enabled is False")
-        if keep_alive_path is not None:
+        if check_path_on_disable and keep_alive_path is not None:
             raise ValueError("keep_alive_path must be None when keep_alive_enabled is False")
 
 
@@ -148,13 +160,7 @@ class MonitorCreate(BaseModel):
     @field_validator("keep_alive_path")
     @classmethod
     def validate_keep_alive_path(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        if not v.startswith("/"):
-            raise ValueError("keep_alive_path must begin with '/' and be a relative path")
-        if v.startswith("//") or "://" in v:
-            raise ValueError("keep_alive_path must be a relative path, not an absolute URL")
-        return v
+        return validate_relative_path(v)
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "MonitorCreate":
@@ -286,22 +292,15 @@ class MonitorUpdate(BaseModel):
     @field_validator("keep_alive_path")
     @classmethod
     def validate_keep_alive_path(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        if not v.startswith("/"):
-            raise ValueError("keep_alive_path must begin with '/' and be a relative path")
-        if v.startswith("//") or "://" in v:
-            raise ValueError("keep_alive_path must be a relative path, not an absolute URL")
-        return v
+        return validate_relative_path(v)
 
     @model_validator(mode="after")
     def validate_update_consistency(self) -> "MonitorUpdate":
-        if self.keep_alive_enabled is True and self.keep_alive_interval_seconds is None:
-            raise ValueError("keep_alive_interval_seconds is required when keep_alive_enabled is True")
-        if self.keep_alive_enabled is False and self.keep_alive_interval_seconds is not None:
-            raise ValueError("keep_alive_interval_seconds must be None when keep_alive_enabled is False")
-        if self.mode == MonitorMode.MONITOR and self.keep_alive_enabled is True:
-            raise ValueError("keep_alive_enabled must be False when mode is 'monitor'")
-        if self.mode in (MonitorMode.KEEP_ALIVE, MonitorMode.MONITOR_AND_KEEP_ALIVE) and self.keep_alive_enabled is False:
-            raise ValueError(f"keep_alive_enabled must be True when mode is '{self.mode.value}'")
+        validate_keep_alive_rules(
+            self.mode,
+            self.keep_alive_enabled,
+            self.keep_alive_interval_seconds,
+            self.keep_alive_path,
+            check_path_on_disable=False,
+        )
         return self
