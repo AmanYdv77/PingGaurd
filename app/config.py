@@ -2,12 +2,14 @@
 Centralised typed configuration settings for PingGuard.
 
 Loads environment variables from `.env` or the environment, validates types and constraints,
-and provides computed database connection strings for both async (FastAPI) and sync (Celery, Alembic) engines.
+and provides computed database connection strings for both async (FastAPI)
+and sync (Celery, Alembic) engines.
 """
 
+import urllib.parse
 from functools import lru_cache
 from typing import Any, Literal
-import urllib.parse
+
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -86,10 +88,10 @@ class Settings(BaseSettings):
         norm = v.strip().upper()
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if norm not in valid_levels:
-            raise ValueError(f"Invalid log level: {v}. Must be one of: {', '.join(sorted(valid_levels))}")
+            raise ValueError(
+                f"Invalid log level: {v}. Must be one of: {', '.join(sorted(valid_levels))}"
+            )
         return norm
-
-
 
     @field_validator("api_key")
     @classmethod
@@ -113,10 +115,12 @@ class Settings(BaseSettings):
             return []
         if isinstance(v, str):
             raw_origins = [item.strip() for item in v.split(",") if item.strip()]
-        elif isinstance(v, (list, tuple, set)):
+        elif isinstance(v, list | tuple | set):
             raw_origins = [str(item).strip() for item in v if str(item).strip()]
         else:
-            raise ValueError("CORS_ALLOWED_ORIGINS must be a comma-separated string or list of origins")
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS must be a comma-separated string or list of origins"
+            )
 
         validated: list[str] = []
         for origin in raw_origins:
@@ -129,7 +133,8 @@ class Settings(BaseSettings):
             parsed = urllib.parse.urlsplit(clean_origin)
             if parsed.scheme.lower() not in ("http", "https"):
                 raise ValueError(
-                    f"Invalid CORS origin scheme: '{origin}'. Only HTTP and HTTPS origins are permitted."
+                    f"Invalid CORS origin scheme: '{origin}'. "
+                    "Only HTTP and HTTPS origins are permitted."
                 )
             if not parsed.netloc:
                 raise ValueError(
@@ -196,8 +201,6 @@ class Settings(BaseSettings):
             raise ValueError("Value must be greater than zero")
         return v
 
-
-
     @field_validator("http_max_redirects")
     @classmethod
     def validate_max_redirects(cls, v: int) -> int:
@@ -248,7 +251,7 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        """Return the database URL normalized to the postgresql+psycopg2 driver for sync Engine / Alembic."""
+        """Return database URL normalized to psycopg2 driver for sync Engine / Alembic."""
         url = make_url(self.database_url)
         return url.set(drivername="postgresql+psycopg2").render_as_string(hide_password=False)
 
@@ -256,4 +259,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Return cached application settings singleton."""
-    return Settings()
+    return Settings()  # type: ignore[call-arg]  # pydantic-settings loads required fields dynamically from environment/.env

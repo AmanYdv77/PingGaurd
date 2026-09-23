@@ -6,7 +6,6 @@ streaming response bounds, monotonic latency tracking, and structured outcome cl
 """
 
 import asyncio
-from dataclasses import dataclass
 import inspect
 import ipaddress
 import logging
@@ -14,12 +13,22 @@ import socket
 import ssl
 import time
 import urllib.parse
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
+
 from app.config import get_settings
 from app.enums import PingOutcome
+from app.ssrf import (
+    DNSResolutionError,
+    SSRFBlockedError,
+    is_ip_blocked,
+    redact_url_credentials,
+)
 from app.status import classify_status_code
+from app.urls import safe_join_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +41,17 @@ logger = logging.getLogger(__name__)
 class PingResultDTO:
     """
     Structured outcome returned by the network prober.
-    
+
     Attributes:
         outcome: Tagged classification (UP, DEGRADED, DOWN, UNREACHABLE).
         status_code: HTTP response code if target responded, else None.
         latency_ms: Round-trip duration in milliseconds (monotonic).
-        error_detail: Concise, stable error identifier (e.g. 'connect_timeout', 'read_timeout', 'total_timeout', 'ssrf_blocked').
+        error_detail: Concise, stable error identifier
+            (e.g. 'connect_timeout', 'read_timeout', 'total_timeout', 'ssrf_blocked').
         original_url: Target URL provided for evaluation.
         final_url: Effective destination URL after following redirects.
     """
+
     outcome: PingOutcome
     status_code: int | None
     latency_ms: float | None
@@ -54,22 +65,9 @@ class PingResultDTO:
 # =============================================================================
 
 
-
-
 # =============================================================================
 # 3. SSRF Defense & Blocklists
 # =============================================================================
-
-from app.ssrf import (
-    BLOCKED_NETWORKS,
-    DNSResolutionError,
-    NAT64_WELL_KNOWN_PREFIX,
-    SSRFBlockedError,
-    is_ip_blocked,
-    redact_url_credentials,
-)
-from app.urls import safe_join_url
-
 
 
 def resolve_and_validate_target(
@@ -79,15 +77,16 @@ def resolve_and_validate_target(
 ) -> tuple[urllib.parse.SplitResult, list[str]]:
     """
     Validates scheme, normalizes URL, resolves hostname, and checks against SSRF blocklist.
-    
+
     Args:
         url: The target URL to validate.
         allow_loopback: If True, permits loopback/private destinations (strictly for unit tests).
-        dns_resolver: Optional custom resolver for deterministic testing (defaults to socket.getaddrinfo).
-        
+        dns_resolver: Optional custom resolver for deterministic testing
+            (defaults to socket.getaddrinfo).
+
     Returns:
         tuple of (parsed_url, list_of_resolved_ips)
-        
+
     Raises:
         SSRFBlockedError: If scheme is forbidden, or if ANY resolved IP falls in a blocked range.
         DNSResolutionError: If hostname resolution fails.
@@ -99,7 +98,9 @@ def resolve_and_validate_target(
 
     # 1. Enforce allowed schemes (HTTP/HTTPS only)
     if parsed.scheme.lower() not in ("http", "https"):
-        raise SSRFBlockedError(f"Unsupported URL scheme: '{parsed.scheme}'. Only HTTP and HTTPS are permitted.")
+        raise SSRFBlockedError(
+            f"Unsupported URL scheme: '{parsed.scheme}'. Only HTTP and HTTPS are permitted."
+        )
 
     hostname = parsed.hostname
     if not hostname:
@@ -118,15 +119,16 @@ def resolve_and_validate_target(
             if allow_loopback and (literal_ip.is_loopback or str(literal_ip) == "127.0.0.1"):
                 pass  # Permitted only for loopback testing
             else:
-                raise SSRFBlockedError(f"SSRF blocked: IP literal '{hostname_clean}' is private or reserved.")
+                raise SSRFBlockedError(
+                    f"SSRF blocked: IP literal '{hostname_clean}' is private or reserved."
+                )
         return parsed, [str(literal_ip)]
     except ValueError:
         pass  # Hostname is not an IP literal, proceed to DNS resolution
 
     # 4. Obvious loopback hostname check
-    if hostname_clean in ("localhost", "localhost.localdomain"):
-        if not allow_loopback:
-            raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
+    if hostname_clean in ("localhost", "localhost.localdomain") and not allow_loopback:
+        raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
 
     # 5. Resolve hostname to all associated IPs
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
@@ -145,7 +147,7 @@ def resolve_and_validate_target(
     resolved_ips: list[str] = []
     for entry in addr_info:
         sockaddr = entry[4]
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         if ip_str not in resolved_ips:
             resolved_ips.append(ip_str)
 
@@ -167,10 +169,11 @@ def resolve_and_validate_target(
                         ip_str,
                     )
                     raise SSRFBlockedError(
-                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to private/restricted IP '{ip_str}'."
+                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to "
+                        f"private/restricted IP '{ip_str}'."
                     )
-        except ValueError:
-            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.")
+        except ValueError as err:
+            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.") from err
 
     return parsed, resolved_ips
 
@@ -192,7 +195,9 @@ async def async_resolve_and_validate_target(
 
     # 1. Enforce allowed schemes (HTTP/HTTPS only)
     if parsed.scheme.lower() not in ("http", "https"):
-        raise SSRFBlockedError(f"Unsupported URL scheme: '{parsed.scheme}'. Only HTTP and HTTPS are permitted.")
+        raise SSRFBlockedError(
+            f"Unsupported URL scheme: '{parsed.scheme}'. Only HTTP and HTTPS are permitted."
+        )
 
     hostname = parsed.hostname
     if not hostname:
@@ -211,15 +216,16 @@ async def async_resolve_and_validate_target(
             if allow_loopback and (literal_ip.is_loopback or str(literal_ip) == "127.0.0.1"):
                 pass
             else:
-                raise SSRFBlockedError(f"SSRF blocked: IP literal '{hostname_clean}' is private or reserved.")
+                raise SSRFBlockedError(
+                    f"SSRF blocked: IP literal '{hostname_clean}' is private or reserved."
+                )
         return parsed, str(literal_ip)
     except ValueError:
         pass
 
     # 4. Obvious loopback hostname check
-    if hostname_clean in ("localhost", "localhost.localdomain"):
-        if not allow_loopback:
-            raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
+    if hostname_clean in ("localhost", "localhost.localdomain") and not allow_loopback:
+        raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
 
     # 5. Resolve hostname
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
@@ -245,7 +251,7 @@ async def async_resolve_and_validate_target(
     resolved_ips: list[str] = []
     for entry in addr_info:
         sockaddr = entry[4]
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         if ip_str not in resolved_ips:
             resolved_ips.append(ip_str)
 
@@ -267,10 +273,11 @@ async def async_resolve_and_validate_target(
                         ip_str,
                     )
                     raise SSRFBlockedError(
-                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to private/restricted IP '{ip_str}'."
+                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to "
+                        f"private/restricted IP '{ip_str}'."
                     )
-        except ValueError:
-            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.")
+        except ValueError as err:
+            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.") from err
 
     return parsed, resolved_ips[0]
 
@@ -279,11 +286,12 @@ async def async_resolve_and_validate_target(
 # 4. Exception Helper
 # =============================================================================
 
+
 def is_tls_exception(exc: Exception) -> bool:
     """Detects whether an exception stems from a TLS/SSL handshake or certificate error."""
     curr: Exception | None = exc
     while curr is not None:
-        if isinstance(curr, (ssl.SSLError, ssl.CertificateError)):
+        if isinstance(curr, ssl.SSLError | ssl.CertificateError):
             return True
         exc_str = str(curr).lower()
         exc_name = type(curr).__name__.lower()
@@ -327,6 +335,7 @@ def _build_probe_error_result(
 # 5. Core Asynchronous Network Probe Engine
 # =============================================================================
 
+
 async def perform_http_probe(
     url: str,
     user_agent: str | None = None,
@@ -343,13 +352,15 @@ async def perform_http_probe(
 ) -> PingResultDTO:
     """
     Executes an asynchronous HTTP GET probe against the target URL.
-    
+
     Enforces SSRF defense with DNS pinning to mitigate DNS-rebinding (TOCTOU),
     granular timeouts, total probe deadline, streaming memory limits,
     and manual redirect verification.
     """
     settings = get_settings()
-    effective_total_timeout = total_timeout if total_timeout is not None else settings.probe_total_timeout_seconds
+    effective_total_timeout = (
+        total_timeout if total_timeout is not None else settings.probe_total_timeout_seconds
+    )
 
     safe_url = redact_url_credentials(url)
     start_mono = time.monotonic()
@@ -360,7 +371,9 @@ async def perform_http_probe(
     r_timeout = read_timeout if read_timeout is not None else settings.http_read_timeout
     w_timeout = write_timeout if write_timeout is not None else settings.http_write_timeout
     p_timeout = pool_timeout if pool_timeout is not None else settings.http_pool_timeout
-    max_bytes = max_response_bytes if max_response_bytes is not None else settings.http_max_response_bytes
+    max_bytes = (
+        max_response_bytes if max_response_bytes is not None else settings.http_max_response_bytes
+    )
     max_redirs = max_redirects if max_redirects is not None else settings.http_max_redirects
 
     timeouts = httpx.Timeout(
@@ -399,20 +412,34 @@ async def perform_http_probe(
                             )
                         except SSRFBlockedError as exc:
                             if redirect_count == 0:
-                                logger.warning("Target rejected by SSRF defense: %s (%s)", safe_url, exc)
+                                logger.warning(
+                                    "Target rejected by SSRF defense: %s (%s)", safe_url, exc
+                                )
                             else:
-                                logger.warning("SSRF blocked during redirect for '%s': %s", safe_url, exc)
+                                logger.warning(
+                                    "SSRF blocked during redirect for '%s': %s", safe_url, exc
+                                )
                             return _build_probe_error_result(url, "ssrf_blocked", latency_ms=None)
                         except DNSResolutionError as exc:
                             elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
                             logger.warning("Target DNS resolution failed: %s (%s)", safe_url, exc)
-                            return _build_probe_error_result(url, "dns_error", latency_ms=elapsed_ms)
+                            return _build_probe_error_result(
+                                url, "dns_error", latency_ms=elapsed_ms
+                            )
 
                         # Step 2: Rewrite request target to pinned IP while preserving Host and SNI
                         host_literal = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-                        rewritten_netloc = f"{host_literal}:{parsed.port}" if parsed.port else host_literal
+                        rewritten_netloc = (
+                            f"{host_literal}:{parsed.port}" if parsed.port else host_literal
+                        )
                         pinned_url = urllib.parse.urlunsplit(
-                            (parsed.scheme, rewritten_netloc, parsed.path or "/", parsed.query, parsed.fragment)
+                            (
+                                parsed.scheme,
+                                rewritten_netloc,
+                                parsed.path or "/",
+                                parsed.query,
+                                parsed.fragment,
+                            )
                         )
 
                         headers = {
@@ -437,7 +464,10 @@ async def perform_http_probe(
                         t1 = time.monotonic()
                         latency_ms = round((t1 - t0) * 1000)
 
-                        if response.is_redirect or (response.status_code in (301, 302, 303, 307, 308) and "Location" in response.headers):
+                        if response.is_redirect or (
+                            response.status_code in (301, 302, 303, 307, 308)
+                            and "Location" in response.headers
+                        ):
                             await response.aclose()
                             if redirect_count >= max_redirs:
                                 raise httpx.TooManyRedirects(
@@ -452,7 +482,9 @@ async def perform_http_probe(
                             next_url = urllib.parse.urljoin(current_url, location.strip())
                             next_parsed = urllib.parse.urlsplit(next_url)
                             if next_parsed.scheme.lower() not in ("http", "https"):
-                                raise SSRFBlockedError(f"Unsupported redirect scheme '{next_parsed.scheme}'.")
+                                raise SSRFBlockedError(
+                                    f"Unsupported redirect scheme '{next_parsed.scheme}'."
+                                )
 
                             current_url = next_url
                             redirect_count += 1
@@ -467,7 +499,8 @@ async def perform_http_probe(
                                 bytes_read += len(chunk)
                                 if bytes_read > max_bytes:
                                     logger.warning(
-                                        "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), terminating stream early",
+                                        "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), "
+                                        "terminating stream early",
                                         safe_url,
                                         max_bytes,
                                     )
@@ -512,7 +545,9 @@ async def perform_http_probe(
                             error_detail = mapped_detail
                             logger.info("%s on '%s' (%s)", mapped_detail, safe_url, exc)
                         break
-                return _build_probe_error_result(url, error_detail, latency_ms=elapsed_ms, outcome=outcome)
+                return _build_probe_error_result(
+                    url, error_detail, latency_ms=elapsed_ms, outcome=outcome
+                )
 
     except TimeoutError as exc:
         elapsed_ms = round((time.monotonic() - start_mono) * 1000, 2)
@@ -524,6 +559,7 @@ async def perform_http_probe(
 # 6. Synchronous Worker Bridge Functions
 # =============================================================================
 
+
 def robust_ping(
     url: str,
     allow_loopback: bool = False,
@@ -533,7 +569,7 @@ def robust_ping(
 ) -> PingResultDTO:
     """
     Synchronous bridge for Celery workers to execute an uptime health probe.
-    
+
     Uses asyncio.run() to safely invoke the asynchronous httpx network engine.
     """
     settings = get_settings()
@@ -559,7 +595,7 @@ def robust_keep_alive(
 ) -> PingResultDTO:
     """
     Synchronous bridge for Celery workers to execute a Keep-Alive activity ping.
-    
+
     Safely joins url + path and executes using the Keep-Alive User-Agent.
     """
     target_url = safe_join_url(url, path)

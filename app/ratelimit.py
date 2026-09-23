@@ -8,15 +8,16 @@ enforcing a fail-open policy so that rate limiter outages never disrupt service 
 import hashlib
 import logging
 import time
-from typing import Annotated, Any, Callable, Protocol
-from fastapi import Depends, HTTPException, Request, status
+from collections.abc import Callable
+from typing import Annotated, Any, Protocol
+
 import redis.asyncio as aioredis
+from fastapi import Depends, HTTPException, Request, status
 
 from app.config import get_settings
 
 logger = logging.getLogger("app.ratelimit")
 logger.disabled = False
-
 
 
 class RateLimiter(Protocol):
@@ -131,7 +132,6 @@ async def rate_limit_write(
         logger.disabled = False
         logger.warning("Redis rate limiter check failed (%s); failing open.", exc)
         return
-
 
     if not allowed:
         raise HTTPException(

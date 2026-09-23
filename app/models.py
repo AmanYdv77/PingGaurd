@@ -4,7 +4,8 @@ SQLAlchemy 2.0 Typed ORM Models.
 Defines the relational schema for Monitor configurations and PingResult logs.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -22,34 +23,44 @@ from app.enums import MonitorMode, MonitorStatus
 
 class Base(DeclarativeBase):
     """Base declarative class for all PingGuard ORM models."""
+
     pass
 
 
 class Monitor(Base):
     """
     Durable configuration and state for an endpoint monitor.
-    
+
     Stores user-configured polling schedules, optional keep-alive parameters,
     and future scheduler tick timestamps (next_check_at, next_keep_alive_at).
     """
+
     __tablename__ = "monitors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    url: Mapped[str] = mapped_column(String(2048), nullable=False)  # Intentionally not unique (same URL may have multiple configs)
+    url: Mapped[str] = mapped_column(
+        String(2048), nullable=False
+    )  # Intentionally not unique (same URL may have multiple configs)
     check_interval_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default=MonitorStatus.PENDING.value, nullable=False)
-    
+    status: Mapped[str] = mapped_column(
+        String(20), default=MonitorStatus.PENDING.value, nullable=False
+    )
+
     # Timezone-aware scheduling timestamps (UTC)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # Optional Keep-Alive configuration
     mode: Mapped[str] = mapped_column(String(30), default=MonitorMode.MONITOR.value, nullable=False)
     keep_alive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     keep_alive_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     keep_alive_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    next_keep_alive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    next_keep_alive_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # Relationship to telemetry logs with cascade deletion
     results: Mapped[list["PingResult"]] = relationship(
@@ -74,10 +85,11 @@ class Monitor(Base):
 class PingResult(Base):
     """
     Historical execution record for a single probe or keep-alive check.
-    
+
     Distinguishes normal health probes from keep-alive activity attempts
     via the `check_type` column.
     """
+
     __tablename__ = "ping_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -97,7 +109,7 @@ class PingResult(Base):
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
     )

@@ -6,10 +6,11 @@ Ensures tests run strictly against an isolated test database (name ending in '_t
 
 import os
 from pathlib import Path
+
 import pytest
-from sqlalchemy.engine import make_url
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.engine import make_url
 
 # -----------------------------------------------------------------------------
 # HARD SAFETY GUARD (Runs at import time before any `app` modules are imported)
@@ -62,8 +63,9 @@ def run_migrations():
 @pytest.fixture
 def client():
     """Unauthenticated FastAPI TestClient."""
-    from fastapi.testclient import TestClient
     import app.main
+    from fastapi.testclient import TestClient
+
     with TestClient(app.main.app) as c:
         yield c
 
@@ -71,8 +73,9 @@ def client():
 @pytest.fixture
 def auth_client():
     """FastAPI TestClient pre-configured with the valid X-API-Key header."""
-    from fastapi.testclient import TestClient
     import app.main
+    from fastapi.testclient import TestClient
+
     with TestClient(app.main.app, headers={"X-API-Key": TEST_API_KEY}) as c:
         yield c
 
@@ -81,6 +84,7 @@ def auth_client():
 def db_session():
     """Synchronous SQLAlchemy Session connected to the test database."""
     from app.db import get_sync_db
+
     with get_sync_db() as session:
         yield session
 
@@ -88,8 +92,9 @@ def db_session():
 @pytest.fixture(autouse=True)
 def cleanup_database():
     """Truncate tables before each test run against the verified test database."""
-    from sqlalchemy import text
     from app.db import sync_engine
+    from sqlalchemy import text
+
     with sync_engine.begin() as conn:
         conn.execute(text("TRUNCATE TABLE ping_results, monitors RESTART IDENTITY CASCADE;"))
     yield
@@ -98,11 +103,11 @@ def cleanup_database():
 @pytest.fixture(autouse=True)
 def setup_db_override():
     """Ensure FastAPI uses NullPool async engine and InMemoryRateLimiter for tests."""
-    from sqlalchemy.pool import NullPool
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    import app.main
     from app.db import DATABASE_URL, get_db
     from app.ratelimit import InMemoryRateLimiter, get_rate_limiter
-    import app.main
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
 
     test_async_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
     test_session_local = async_sessionmaker(
@@ -126,5 +131,3 @@ def setup_db_override():
     app.main.app.dependency_overrides[get_rate_limiter] = lambda: InMemoryRateLimiter()
     yield
     app.main.app.dependency_overrides.clear()
-
-

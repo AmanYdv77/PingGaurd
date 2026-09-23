@@ -10,26 +10,26 @@ import urllib.parse
 
 # Forbidden IPv4 and IPv6 address ranges (RFC 1918, CGNAT, Loopback, Link-Local, ULA, Multicast)
 BLOCKED_NETWORKS = (
-    ipaddress.ip_network("127.0.0.0/8"),        # Loopback IPv4
-    ipaddress.ip_network("10.0.0.0/8"),         # RFC 1918 Class A
-    ipaddress.ip_network("172.16.0.0/12"),      # RFC 1918 Class B
-    ipaddress.ip_network("192.168.0.0/16"),     # RFC 1918 Class C
-    ipaddress.ip_network("169.254.0.0/16"),     # Link-Local / Cloud Metadata (169.254.169.254)
-    ipaddress.ip_network("0.0.0.0/8"),          # Current Network
-    ipaddress.ip_network("100.64.0.0/10"),      # Carrier-Grade NAT (RFC 6598)
-    ipaddress.ip_network("192.0.0.0/24"),       # IETF Protocol Assignments
-    ipaddress.ip_network("192.0.2.0/24"),       # TEST-NET-1
-    ipaddress.ip_network("198.51.100.0/24"),    # TEST-NET-2
-    ipaddress.ip_network("203.0.113.0/24"),     # TEST-NET-3
-    ipaddress.ip_network("224.0.0.0/4"),        # Multicast
-    ipaddress.ip_network("240.0.0.0/4"),        # Reserved
-    ipaddress.ip_network("255.255.255.255/32"), # Broadcast
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback IPv4
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918 Class A
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918 Class B
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918 Class C
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-Local / Cloud Metadata (169.254.169.254)
+    ipaddress.ip_network("0.0.0.0/8"),  # Current Network
+    ipaddress.ip_network("100.64.0.0/10"),  # Carrier-Grade NAT (RFC 6598)
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF Protocol Assignments
+    ipaddress.ip_network("192.0.2.0/24"),  # TEST-NET-1
+    ipaddress.ip_network("198.51.100.0/24"),  # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"),  # TEST-NET-3
+    ipaddress.ip_network("224.0.0.0/4"),  # Multicast
+    ipaddress.ip_network("240.0.0.0/4"),  # Reserved
+    ipaddress.ip_network("255.255.255.255/32"),  # Broadcast
     # IPv6 Networks
-    ipaddress.ip_network("::1/128"),            # Loopback IPv6
-    ipaddress.ip_network("::/128"),             # Unspecified IPv6
-    ipaddress.ip_network("fe80::/10"),          # Link-Local IPv6
-    ipaddress.ip_network("fc00::/7"),           # Unique Local Address (ULA) IPv6
-    ipaddress.ip_network("ff00::/8"),           # Multicast IPv6
+    ipaddress.ip_network("::1/128"),  # Loopback IPv6
+    ipaddress.ip_network("::/128"),  # Unspecified IPv6
+    ipaddress.ip_network("fe80::/10"),  # Link-Local IPv6
+    ipaddress.ip_network("fc00::/7"),  # Unique Local Address (ULA) IPv6
+    ipaddress.ip_network("ff00::/8"),  # Multicast IPv6
 )
 
 NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
@@ -37,11 +37,13 @@ NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 class SSRFBlockedError(Exception):
     """Raised when a destination URL or resolved IP is forbidden by SSRF policy."""
+
     pass
 
 
 class DNSResolutionError(Exception):
     """Raised when a hostname cannot be resolved via DNS."""
+
     pass
 
 
@@ -66,11 +68,7 @@ def is_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     ):
         return True
 
-    for blocked_net in BLOCKED_NETWORKS:
-        if ip in blocked_net:
-            return True
-
-    return False
+    return any(ip in blocked_net for blocked_net in BLOCKED_NETWORKS)
 
 
 def redact_url_credentials(url: str) -> str:

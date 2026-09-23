@@ -8,7 +8,9 @@ from pydantic import ValidationError
 
 def test_import_and_defaults(monkeypatch):
     """Verify Settings loads expected defaults with required database_url provided."""
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/pingguard")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://postgres:pass@localhost:5432/pingguard"
+    )
     from app.config import Settings
 
     settings = Settings()
@@ -83,7 +85,7 @@ def test_database_url_required():
     from app.config import Settings
 
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, database_url=None)  # type: ignore[arg-type]
+        Settings(_env_file=None, database_url=None)  # type: ignore[arg-type]  # Deliberately invalid type to test validation
 
 
 def test_positive_timeout_validation():
@@ -150,7 +152,9 @@ def test_strong_password_allowed_in_prod():
     """Verify production environment accepts strong, random database passwords."""
     from app.config import Settings
 
-    strong_url = "postgresql+asyncpg://postgres:A9k_L2x0m-Pq8vY_Z4w7R1s9_X2j5@localhost:5432/pingguard"
+    strong_url = (
+        "postgresql+asyncpg://postgres:A9k_L2x0m-Pq8vY_Z4w7R1s9_X2j5@localhost:5432/pingguard"
+    )
     settings = Settings(database_url=strong_url, environment="prod")
     assert settings.environment == "prod"
 
@@ -168,11 +172,14 @@ def test_weak_passwords_allowed_in_test_environment():
 # Task A8: Probe Total Timeout & Celery Limit Budget Tests
 # =============================================================================
 
+
 def test_probe_total_timeout_settings_defaults():
     """Verify probe total timeout and Celery time limits have expected defaults."""
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.probe_total_timeout_seconds == 8.0
     assert s.celery_soft_time_limit == 10
     assert s.celery_hard_time_limit == 15
@@ -210,7 +217,9 @@ def test_api_key_required(monkeypatch):
     from app.config import Settings
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+        )
     assert "api_key" in str(exc_info.value)
 
 
@@ -220,7 +229,9 @@ def test_api_key_min_length(monkeypatch):
     from app.config import Settings
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+        )
     assert "at least 24 characters" in str(exc_info.value)
 
 
@@ -230,7 +241,9 @@ def test_api_key_weak_value_rejected(monkeypatch):
     from app.config import Settings
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+        )
     assert "weak or placeholder value" in str(exc_info.value)
 
 
@@ -240,7 +253,9 @@ def test_api_key_secret_str_safe_repr(monkeypatch):
     monkeypatch.setenv("API_KEY", secret)
     from app.config import Settings
 
-    settings = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    settings = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert settings.api_key.get_secret_value() == secret
     assert secret not in str(settings.api_key)
     assert secret not in repr(settings)
@@ -252,8 +267,14 @@ def test_cors_allowed_origins_wildcard_rejected(monkeypatch):
     from app.config import Settings
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
-    assert "Wildcard" in str(exc_info.value) or "not allowed" in str(exc_info.value) or "not permitted" in str(exc_info.value)
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+        )
+    assert (
+        "Wildcard" in str(exc_info.value)
+        or "not allowed" in str(exc_info.value)
+        or "not permitted" in str(exc_info.value)
+    )
 
 
 def test_cors_allowed_origins_parsing(monkeypatch):
@@ -261,7 +282,9 @@ def test_cors_allowed_origins_parsing(monkeypatch):
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000, https://app.example.com/")
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.cors_allowed_origins == ["http://localhost:3000", "https://app.example.com"]
 
 
@@ -271,7 +294,9 @@ def test_cors_allowed_origins_invalid_path_rejected(monkeypatch):
     from app.config import Settings
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+        Settings(
+            database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+        )
     assert "path" in str(exc_info.value).lower()
 
 
@@ -279,7 +304,9 @@ def test_rate_limit_and_monitor_cap_defaults():
     """Verify rate_limit_writes_per_minute and max_monitors default values."""
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.rate_limit_writes_per_minute == 60
     assert s.max_monitors == 100
 
@@ -307,7 +334,9 @@ def test_retention_settings_defaults():
     """Verify ping_results_retention_days and retention_batch_size defaults."""
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.ping_results_retention_days == 30
     assert s.retention_batch_size == 10000
 
@@ -335,11 +364,14 @@ def test_retention_settings_validation():
 # Task A17: Scheduler Sweep Batching & Throttling Settings Tests
 # =============================================================================
 
+
 def test_sweep_batching_settings_defaults():
     """Verify sweep_batch_size and sweep_max_batches defaults."""
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.sweep_batch_size == 500
     assert s.sweep_max_batches == 20
 
@@ -367,7 +399,9 @@ def test_logging_settings_defaults():
     """Verify log_level and log_json have expected defaults."""
     from app.config import Settings
 
-    s = Settings(database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test")
+    s = Settings(
+        database_url="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+    )
     assert s.log_level == "INFO"
     assert s.log_json is True
 
@@ -390,9 +424,3 @@ def test_logging_settings_validation():
             log_level="NOT_A_LEVEL",
         )
     assert "log_level" in str(exc_info.value)
-
-
-
-
-
-

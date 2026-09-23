@@ -4,7 +4,8 @@ Tests for health/readiness endpoints and structured logging with request IDs (Ta
 Covers:
 - Unauthenticated liveness probe (GET /health) contract.
 - Unauthenticated readiness probe (GET /ready) checking PostgreSQL and Redis dependencies.
-- Error payloads on dependency outages returning HTTP 503 without leaking credentials or exception details.
+- Error payloads on dependency outages returning HTTP 503 without leaking credentials
+  or exception details.
 - Request-ID middleware validation, propagation, and generation.
 - Structured JSON logging format and context-aware request_id inclusion.
 """
@@ -14,6 +15,7 @@ import json
 import logging
 import re
 from unittest.mock import AsyncMock, patch
+
 import pytest
 from app import __version__
 from app.config import Settings
@@ -42,7 +44,10 @@ def test_ready_endpoint_both_healthy(client):
 
 
 def test_ready_endpoint_database_failure_503(client):
-    """GET /ready returns 503 with failed=['database'] when PostgreSQL fails, without leaking details."""
+    """
+    GET /ready returns 503 with failed=['database'] when PostgreSQL fails,
+    without leaking details.
+    """
     with patch("app.main.check_database_readiness", new_callable=AsyncMock) as mock_db:
         mock_db.return_value = False
         with patch("app.main.check_redis_readiness", new_callable=AsyncMock) as mock_redis:
@@ -93,7 +98,10 @@ def test_request_id_header_generated_when_missing(client):
 
 
 def test_request_id_header_echoed_when_valid(client):
-    """Requests with valid X-Request-ID header (8-64 alphanumeric/dash/underscore) echo the exact ID."""
+    """
+    Requests with valid X-Request-ID header (8-64 alphanumeric/dash/underscore)
+    echo the exact ID.
+    """
     valid_id = "req-custom_trace-12345"
     response = client.get("/health", headers={"X-Request-ID": valid_id})
     assert response.status_code == 200
@@ -175,10 +183,10 @@ def test_config_log_level_validation():
 
 def test_live_database_readiness():
     """Verify check_database_readiness executes SELECT 1 against live test DB."""
-    from sqlalchemy.pool import NullPool
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.db import DATABASE_URL
     from app.main import check_database_readiness
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
 
     async def _run():
         test_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
@@ -196,6 +204,7 @@ def test_live_database_readiness():
 def test_graceful_redis_readiness_failure():
     """Verify check_redis_readiness returns False when Redis is unreachable without raising."""
     from app.main import check_redis_readiness
+
     ready = asyncio.run(check_redis_readiness())
     assert isinstance(ready, bool)
 
@@ -203,6 +212,7 @@ def test_graceful_redis_readiness_failure():
 def test_credential_redaction_before_logging():
     """Ensure sensitive credentials in target URLs are safely redacted before logging."""
     from app.ssrf import redact_url_credentials
+
     raw_url = "https://user:verysecretpass@api.service.internal:8080/data"
     redacted = redact_url_credentials(raw_url)
     assert "verysecretpass" not in redacted

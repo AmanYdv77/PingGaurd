@@ -2,13 +2,13 @@
 Automated Test Suite for Periodic Scheduler Sweep.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
-import redis
 
+import redis
 from app.db import SyncSessionLocal, get_sync_db
-from app.models import Monitor
 from app.enums import MonitorMode, MonitorStatus
+from app.models import Monitor
 from app.tasks import sweep_due_monitors
 from app.worker import celery_app
 
@@ -45,7 +45,9 @@ def _create_test_monitor(
 
 
 def test_beat_schedule_configuration() -> None:
-    """Verify Celery Beat static periodic task entries and absence of dynamic per-monitor entries."""
+    """
+    Verify Celery Beat static periodic task entries and absence of dynamic per-monitor entries.
+    """
     beat_sched = celery_app.conf.beat_schedule
     assert "sweep-due-monitors" in beat_sched
     assert beat_sched["sweep-due-monitors"]["task"] == "app.tasks.sweep_due_monitors"
@@ -59,7 +61,7 @@ def test_beat_schedule_configuration() -> None:
 @patch("app.tasks.execute_keep_alive.apply_async")
 def test_sweep_monitoring_due(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
     """Verify overdue monitor triggers execute_ping and advances next_check_at."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=10)
     mid = _create_test_monitor(
         check_interval_seconds=60,
@@ -89,7 +91,7 @@ def test_sweep_enqueues_with_task_expiration(
     mock_ka_async: MagicMock, mock_ping_async: MagicMock
 ) -> None:
     """Verify Celery Beat dispatches with apply_async and passes expires=check_interval_seconds."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=10)
     mid = _create_test_monitor(
         check_interval_seconds=60,
@@ -108,7 +110,7 @@ def test_sweep_enqueues_with_task_expiration(
 @patch("app.tasks.execute_keep_alive.apply_async")
 def test_sweep_keep_alive_due(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
     """Verify overdue keep-alive triggers execute_keep_alive and advances next_keep_alive_at."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=15)
     mid = _create_test_monitor(
         mode=MonitorMode.KEEP_ALIVE.value,
@@ -137,7 +139,7 @@ def test_sweep_keep_alive_due(mock_ka_async: MagicMock, mock_ping_async: MagicMo
 @patch("app.tasks.execute_keep_alive.apply_async")
 def test_sweep_dual_mode_both_due(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
     """Verify monitor_and_keep_alive mode independently triggers both tasks when both are due."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=5)
     mid = _create_test_monitor(
         check_interval_seconds=45,
@@ -164,9 +166,11 @@ def test_sweep_dual_mode_both_due(mock_ka_async: MagicMock, mock_ping_async: Mag
 
 @patch("app.tasks.execute_ping.apply_async")
 @patch("app.tasks.execute_keep_alive.apply_async")
-def test_sweep_dual_mode_independent_timing(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
+def test_sweep_dual_mode_independent_timing(
+    mock_ka_async: MagicMock, mock_ping_async: MagicMock
+) -> None:
     """Verify only the overdue schedule triggers when intervals differ."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=10)
     future_time = now + timedelta(seconds=200)
 
@@ -195,12 +199,16 @@ def test_sweep_dual_mode_independent_timing(mock_ka_async: MagicMock, mock_ping_
 
 @patch("app.tasks.execute_ping.apply_async")
 @patch("app.tasks.execute_keep_alive.apply_async")
-def test_sweep_keep_alive_disabled_never_enqueued(mock_ka_async: MagicMock, mock_ping_async: MagicMock) -> None:
-    """Gatekeeper: If keep_alive_enabled=False, never enqueue keep-alive even if timestamp is past."""
-    now = datetime.now(timezone.utc)
+def test_sweep_keep_alive_disabled_never_enqueued(
+    mock_ka_async: MagicMock, mock_ping_async: MagicMock
+) -> None:
+    """
+    Gatekeeper: If keep_alive_enabled=False, never enqueue keep-alive even if timestamp is past.
+    """
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=50)
 
-    mid = _create_test_monitor(
+    _create_test_monitor(
         mode=MonitorMode.MONITOR.value,
         next_check_at=now + timedelta(seconds=600),  # Not due
         keep_alive_enabled=False,
@@ -215,8 +223,10 @@ def test_sweep_keep_alive_disabled_never_enqueued(mock_ka_async: MagicMock, mock
 
 
 def test_sweep_skip_locked_concurrency() -> None:
-    """Verify that SELECT FOR UPDATE SKIP LOCKED avoids claiming rows locked by another transaction."""
-    now = datetime.now(timezone.utc)
+    """
+    Verify SELECT FOR UPDATE SKIP LOCKED avoids claiming rows locked by another transaction.
+    """
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=20)
     mid = _create_test_monitor(
         mode=MonitorMode.MONITOR.value,
@@ -254,8 +264,8 @@ def test_sweep_skip_locked_concurrency() -> None:
 
 @patch("app.tasks.execute_ping.apply_async")
 def test_sweep_missed_schedules_no_catchup_storm(mock_async: MagicMock) -> None:
-    """Anti-storm rule: A monitor 3 hours overdue enqueues ONE check and advances from current time."""
-    now = datetime.now(timezone.utc)
+    """Anti-storm: A monitor 3 hours overdue enqueues ONE check and advances from current time."""
+    now = datetime.now(UTC)
     three_hours_ago = now - timedelta(hours=3)
     mid = _create_test_monitor(
         check_interval_seconds=60,
@@ -275,7 +285,10 @@ def test_sweep_missed_schedules_no_catchup_storm(mock_async: MagicMock) -> None:
         assert abs(diff - 60.0) <= 5.0
 
 
-@patch("app.tasks.execute_ping.apply_async", side_effect=redis.exceptions.ConnectionError("Redis connection lost"))
+@patch(
+    "app.tasks.execute_ping.apply_async",
+    side_effect=redis.exceptions.ConnectionError("Redis connection lost"),
+)
 def test_sweep_redis_failure_recovers_schedule_to_now(mock_async: MagicMock) -> None:
     """
     Resilience (New Semantics):
@@ -283,7 +296,7 @@ def test_sweep_redis_failure_recovers_schedule_to_now(mock_async: MagicMock) -> 
     next_check_at is reset to 'now' so the monitor is immediately retried on the next sweep
     instead of staying pushed into the future.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=30)
     mid = _create_test_monitor(
         check_interval_seconds=60,
@@ -304,7 +317,7 @@ def test_sweep_redis_failure_recovers_schedule_to_now(mock_async: MagicMock) -> 
 @patch("app.tasks.execute_ping.apply_async")
 def test_sweep_batching_respects_batch_size(mock_async: MagicMock) -> None:
     """Batching: 5 due monitors with batch_size=2 are processed across multiple batches."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=10)
     for i in range(5):
         _create_test_monitor(name=f"Monitor {i}", next_check_at=past_time)
@@ -316,8 +329,10 @@ def test_sweep_batching_respects_batch_size(mock_async: MagicMock) -> None:
 
 @patch("app.tasks.execute_ping.apply_async")
 def test_sweep_max_batches_bounds_sweep_runtime(mock_async: MagicMock) -> None:
-    """Batch bounding: 6 due monitors with batch_size=2 and max_batches=2 processes only 4 monitors."""
-    now = datetime.now(timezone.utc)
+    """
+    Batch bounding: 6 due monitors with batch_size=2 and max_batches=2 processes only 4 monitors.
+    """
+    now = datetime.now(UTC)
     past_time = now - timedelta(seconds=10)
     for i in range(6):
         _create_test_monitor(name=f"Monitor {i}", next_check_at=past_time)
@@ -329,17 +344,13 @@ def test_sweep_max_batches_bounds_sweep_runtime(mock_async: MagicMock) -> None:
 
     # The remaining 2 monitors must still be overdue and ready for next sweep
     with get_sync_db() as session:
-        remaining_due = (
-            session.query(Monitor)
-            .filter(Monitor.next_check_at <= now)
-            .count()
-        )
+        remaining_due = session.query(Monitor).filter(Monitor.next_check_at <= now).count()
         assert remaining_due == 2
 
 
 def test_sweep_idle_no_monitors_due() -> None:
     """Verify clean idle run when no monitors are due."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _create_test_monitor(
         mode=MonitorMode.MONITOR.value,
         next_check_at=now + timedelta(hours=1),

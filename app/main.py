@@ -7,28 +7,35 @@ monitor registration, retrieval, update, listing, and on-demand checks.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Annotated, Any
 import uuid
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response, status
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from enum import Enum
+from typing import Annotated
+
+import redis.asyncio as aioredis
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import redis.asyncio as aioredis
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
 from app.config import get_settings
 from app.db import engine, get_db
+from app.enums import MonitorMode, MonitorStatus
 from app.logging_config import REQUEST_ID_REGEX, configure_logging, request_id_var
 from app.models import Monitor, PingResult
 from app.ratelimit import rate_limit_write
-from app.security import require_api_key
-from app.tasks import execute_ping
-
-from app.enums import MonitorMode, MonitorStatus
 from app.schemas import (
     MonitorCheckResponse,
     MonitorCreate,
@@ -37,6 +44,8 @@ from app.schemas import (
     PingResultRead,
     validate_keep_alive_rules,
 )
+from app.security import require_api_key
+from app.tasks import execute_ping
 
 settings = get_settings()
 
@@ -74,10 +83,7 @@ async def request_id_middleware(request: Request, call_next):
     Accepts valid incoming X-Request-ID header, otherwise generates new UUID hex.
     """
     incoming = request.headers.get("X-Request-ID")
-    if incoming and REQUEST_ID_REGEX.match(incoming):
-        req_id = incoming
-    else:
-        req_id = uuid.uuid4().hex
+    req_id = incoming if incoming and REQUEST_ID_REGEX.match(incoming) else uuid.uuid4().hex
 
     token = request_id_var.set(req_id)
     try:
@@ -131,7 +137,7 @@ async def check_redis_readiness() -> bool:
     "/health",
     tags=["System"],
     summary="Health check",
-    description="Returns the operational status of the PingGuard API service."
+    description="Returns the operational status of the PingGuard API service.",
 )
 async def health_check() -> dict[str, str]:
     """Basic service health check endpoint for container orchestrators and uptime probes."""
@@ -190,7 +196,8 @@ router = APIRouter(
     dependencies=[Depends(rate_limit_write)],
     summary="Create a new monitor",
     description=(
-        "Validates and persists a new monitor endpoint in PostgreSQL with optional keep-alive settings. "
+        "Validates and persists a new monitor endpoint in PostgreSQL with "
+        "optional keep-alive settings. "
         "Initial status is set to PENDING. No outbound network probe is performed in this request."
     ),
 )
@@ -200,7 +207,7 @@ async def create_monitor(
 ) -> MonitorRead:
     """
     Asynchronously registers a target URL for monitoring and/or keep-alive in PostgreSQL.
-    
+
     - Validates payload via MonitorCreate schema.
     - Enforces keep-alive configuration consistency.
     - Persists durable row in the 'monitors' table with auto-generated ID.
@@ -215,7 +222,7 @@ async def create_monitor(
             detail="monitor limit reached",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     monitor = Monitor(
         name=payload.name,
@@ -233,14 +240,17 @@ async def create_monitor(
     db.add(monitor)
     await db.commit()
     await db.refresh(monitor)
-    return monitor
+    return MonitorRead.model_validate(monitor)
 
 
 @router.get(
     "/{monitor_id}",
     response_model=MonitorRead,
     summary="Get monitor by ID",
-    description="Retrieves configuration, status, and keep-alive settings for a single monitor from PostgreSQL.",
+    description=(
+        "Retrieves configuration, status, and keep-alive settings "
+        "for a single monitor from PostgreSQL."
+    ),
 )
 async def get_monitor(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
@@ -248,7 +258,7 @@ async def get_monitor(
 ) -> MonitorRead:
     """
     Asynchronously fetches a monitor from PostgreSQL by its unique ID.
-    
+
     Raises HTTP 404 if the monitor does not exist.
     """
     monitor = await db.get(Monitor, monitor_id)
@@ -257,7 +267,7 @@ async def get_monitor(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Monitor not found",
         )
-    return monitor
+    return MonitorRead.model_validate(monitor)
 
 
 @router.patch(
@@ -265,14 +275,20 @@ async def get_monitor(
     response_model=MonitorRead,
     dependencies=[Depends(rate_limit_write)],
     summary="Update monitor (Partial)",
-    description="Partially updates an existing monitor's name, check interval, or keep-alive configuration in PostgreSQL.",
+    description=(
+        "Partially updates an existing monitor's name, check interval, "
+        "or keep-alive configuration in PostgreSQL."
+    ),
 )
 @router.put(
     "/{monitor_id}",
     response_model=MonitorRead,
     dependencies=[Depends(rate_limit_write)],
     summary="Update monitor",
-    description="Updates an existing monitor's configuration, including keep-alive parameters in PostgreSQL.",
+    description=(
+        "Updates an existing monitor's configuration, including "
+        "keep-alive parameters in PostgreSQL."
+    ),
 )
 async def update_monitor(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
@@ -281,10 +297,10 @@ async def update_monitor(
 ) -> MonitorRead:
     """
     Asynchronously updates an existing monitor in PostgreSQL.
-    
+
     Supports both PATCH and PUT semantics. Fields omitted or set to None are preserved.
     Enforces configuration consistency across the merged monitor state.
-    Raises HTTP 404 if the monitor does not exist, or HTTP 422 if the update creates an invalid state.
+    Raises HTTP 404 if the monitor does not exist, or HTTP 422 if update creates an invalid state.
     """
     monitor = await db.get(Monitor, monitor_id)
     if monitor is None:
@@ -307,7 +323,9 @@ async def update_monitor(
     # Compute merged state for consistency validation
     target_mode = MonitorMode(update_data.get("mode", monitor.mode))
     target_keep_alive = update_data.get("keep_alive_enabled", monitor.keep_alive_enabled)
-    target_interval = update_data.get("keep_alive_interval_seconds", monitor.keep_alive_interval_seconds)
+    target_interval = update_data.get(
+        "keep_alive_interval_seconds", monitor.keep_alive_interval_seconds
+    )
     target_path = update_data.get("keep_alive_path", monitor.keep_alive_path)
 
     try:
@@ -318,7 +336,7 @@ async def update_monitor(
             keep_alive_path=target_path,
         )
     except ValueError as err:
-        raise HTTPException(status_code=422, detail=str(err))
+        raise HTTPException(status_code=422, detail=str(err)) from err
 
     # Apply updates
     for key, value in update_data.items():
@@ -328,13 +346,13 @@ async def update_monitor(
 
     # Maintain next_keep_alive_at synchronization
     if monitor.keep_alive_enabled and monitor.next_keep_alive_at is None:
-        monitor.next_keep_alive_at = datetime.now(timezone.utc)
+        monitor.next_keep_alive_at = datetime.now(UTC)
     elif not monitor.keep_alive_enabled:
         monitor.next_keep_alive_at = None
 
     await db.commit()
     await db.refresh(monitor)
-    return monitor
+    return MonitorRead.model_validate(monitor)
 
 
 @router.get(
@@ -350,12 +368,12 @@ async def list_monitors(
 ) -> list[MonitorRead]:
     """
     Asynchronously retrieves a paginated slice of monitors from PostgreSQL.
-    
+
     Guarded with default limit=100 to prevent unbounded database query memory allocation.
     """
     stmt = select(Monitor).order_by(Monitor.id.asc()).offset(skip).limit(limit)
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    return [MonitorRead.model_validate(m) for m in result.scalars().all()]
 
 
 @router.delete(
@@ -387,13 +405,18 @@ async def delete_monitor(
     "/{monitor_id}/results",
     response_model=list[PingResultRead],
     summary="Get monitor probe results",
-    description="Retrieves historical probe and keep-alive results for a monitor, ordered most recent first.",
+    description=(
+        "Retrieves historical probe and keep-alive results for a monitor, "
+        "ordered most recent first."
+    ),
 )
 async def get_monitor_results(
     monitor_id: Annotated[int, Path(..., description="The unique integer ID of the monitor", ge=1)],
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: Annotated[int, Query(description="Maximum results to return", ge=1, le=500)] = 50,
-    check_type: Annotated[str | None, Query(description="Filter by check_type ('monitor' or 'keep_alive')")] = None,
+    check_type: Annotated[
+        str | None, Query(description="Filter by check_type ('monitor' or 'keep_alive')")
+    ] = None,
 ) -> list[PingResultRead]:
     """
     Retrieves probe and keep-alive execution telemetry for charting and auditing.
@@ -409,7 +432,7 @@ async def get_monitor_results(
         stmt = stmt.where(PingResult.check_type == check_type)
     stmt = stmt.order_by(PingResult.checked_at.desc()).limit(limit)
     res = await db.execute(stmt)
-    return list(res.scalars().all())
+    return [PingResultRead.model_validate(r) for r in res.scalars().all()]
 
 
 @router.post(
@@ -419,10 +442,10 @@ async def get_monitor_results(
     dependencies=[Depends(rate_limit_write)],
     summary="Queue on-demand probe check (results appear via GET /monitors/{id}/results)",
     description=(
-
         "Enqueues an immediate health probe task for the specified monitor to Celery workers. "
         "Returns HTTP 202 Accepted immediately without performing outbound network I/O in the API. "
-        "Historical and latest check results can be retrieved via GET /monitors/{monitor_id}/results."
+        "Historical and latest results can be retrieved via "
+        "GET /monitors/{monitor_id}/results."
     ),
 )
 async def trigger_monitor_check(
@@ -446,4 +469,3 @@ async def trigger_monitor_check(
 
 
 app.include_router(router)
-

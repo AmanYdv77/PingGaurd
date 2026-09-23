@@ -11,6 +11,7 @@ Configures the Celery distributed task queue backed by Redis:
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import setup_logging
+
 from app.config import get_settings
 from app.logging_config import configure_logging
 
@@ -22,6 +23,8 @@ settings = get_settings()
 def on_setup_logging(**kwargs):
     """Align Celery worker logging with PingGuard structured JSON logging format."""
     configure_logging(level=settings.log_level, json_logs=settings.log_json)
+
+
 REDIS_BROKER_URL = settings.redis_broker_url
 REDIS_RESULT_BACKEND_URL = settings.redis_result_backend_url
 
@@ -39,27 +42,20 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    
     # Timezone alignment
     timezone="UTC",
     enable_utc=True,
-    
     # Task reliability: acknowledge only after execution finishes
     task_acks_late=True,
-    
     # Prevent worker head-of-line blocking: reserve exactly 1 task at a time
     worker_prefetch_multiplier=1,
-    
     # Task execution timeouts (seconds)
     task_soft_time_limit=settings.celery_soft_time_limit,
     task_time_limit=settings.celery_hard_time_limit,
-    
     # Prevent Redis result backend unbounded memory accumulation
     result_expires=3600,
-    
     # Explicit task tracking
     task_track_started=True,
-
     # Celery Beat Periodic Scheduling Heartbeat
     # Sweep task queries PostgreSQL for due work.
     # Prune task cleans up expired ping_result rows daily at 03:00 UTC.

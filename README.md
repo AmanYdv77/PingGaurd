@@ -277,4 +277,3 @@ For production cloud deployments (AWS, GCP, Render, Kubernetes):
 1. **Managed Data Stores:** Use AWS RDS / GCP Cloud SQL for PostgreSQL and ElastiCache / Memorystore for Redis.
 2. **Release-Phase Migrations:** Execute `alembic upgrade head` in deployment pipelines before releasing new containers.
 3. **External Cluster Monitoring:** Monitor PingGuard's external health at `GET /health` rather than having PingGuard monitor itself.
-

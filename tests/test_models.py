@@ -9,16 +9,15 @@ Verifies:
 
 import ast
 from pathlib import Path
-import pytest
-from sqlalchemy import inspect
 
 from app.db import sync_engine
+from sqlalchemy import inspect
 
 
 def test_models_does_not_import_schemas() -> None:
     """Verify app/models.py does not import from app.schemas (strictly enforces layer direction)."""
     models_path = Path(__file__).resolve().parent.parent / "app" / "models.py"
-    with open(models_path, "r", encoding="utf-8") as f:
+    with open(models_path, encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=str(models_path))
 
     imported_modules: list[str] = []
@@ -26,14 +25,15 @@ def test_models_does_not_import_schemas() -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imported_modules.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imported_modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.append(node.module)
 
     schemas_imports = [
         mod for mod in imported_modules if mod == "app.schemas" or mod.startswith("app.schemas.")
     ]
-    assert not schemas_imports, f"app/models.py illegally imports from API schemas layer: {schemas_imports}"
+    assert not schemas_imports, (
+        f"app/models.py illegally imports from API schemas layer: {schemas_imports}"
+    )
 
 
 def test_redundant_monitor_id_index_dropped_in_database() -> None:
