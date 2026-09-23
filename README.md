@@ -1,279 +1,368 @@
-# PingGuard — Distributed Uptime Monitoring System
+# PingGuard
 
-PingGuard is a high-performance, fault-tolerant distributed uptime monitoring system. It is designed to reliably monitor thousands of remote endpoints across the internet without letting slow or unresponsive targets block user-facing APIs.
+[![CI](https://github.com/AmanYdv77/PingGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/AmanYdv77/PingGuard/actions/workflows/ci.yml)
 
-The system strictly decouples the **API Control Plane** (FastAPI + PostgreSQL) from the **Distributed Probing Data Plane** (Celery, Redis, and HTTPX) so that slow external network I/O never degrades API throughput.
-
----
-
-## 1. Project Roadmap & Implementation Status
-
-PingGuard is developed in six sequential, independently verifiable chapters:
-
-| Chapter | Component & Technology | Status | Description |
-| :--- | :--- | :---: | :--- |
-| **Chapter 1** | **The Request Layer** *(FastAPI & Async Python)* | **Completed** | Non-blocking REST API, Pydantic v2 validation, and boundary guards. |
-| **Chapter 2** | **The Persistence Layer** *(SQLAlchemy 2.0 & Alembic)* | **Completed** | Relational persistence with PostgreSQL, asyncpg driver, typed Mapped[] ORM, and Alembic migrations. |
-| **Chapter 3** | **Distributed Task Execution** *(Celery & Redis)* | **Completed** | Celery worker pool, Redis message broker, late acks, prefetch multiplier 1, and synchronous worker DB sessions. |
-| **Chapter 4** | **The Scheduling Heartbeat** *(Celery Beat)* | **Completed** | Database-driven periodic sweep (`next_check_at`, `next_keep_alive_at`), concurrency-safe `FOR UPDATE SKIP LOCKED`, and anti-storm recovery. |
-| **Chapter 5** | **Network Resilience** *(HTTPX Prober)* | **Completed** | Fine-grained timeout budgets, SSRF defense, redirect interception, streaming memory limits, outcome classification (UP/DEGRADED/DOWN/UNREACHABLE). |
-| **Chapter 6** | **Container Orchestration** *(Docker Compose)* | **Completed** | Multi-container cluster with healthcheck chains, singleton scheduler, worker scaling, and persistent volumes. |
+PingGuard is a self-hosted, distributed HTTP uptime and keep-alive monitoring service built with FastAPI, PostgreSQL, Redis, and Celery.
 
 ---
 
-## 2. Chapter 3 Architecture: Distributed Task Execution
+## Features
 
-Chapter 3 implements the distributed background processing pipeline, decoupling network I/O from the FastAPI web service:
-
-```
-FastAPI / future Celery Beat
-       │
-       │ Enqueue task (.delay(monitor_id))
-       ▼
-  Redis Queue (Broker: redis://localhost:6379/0)
-       │
-       │ Worker consumes task (prefetch_multiplier=1, acks_late=True)
-       ▼
-  Celery Worker Process
-       │
-       ├──► execute_ping(monitor_id) -------> Target URL (Health Probe)
-       │                                            │
-       └──► execute_keep_alive(monitor_id) -> Target URL + path (Activity Ping)
-                                                    │
-                                                    ▼
-                                           PostgreSQL (pingguard)
-                                           - ping_results (check_type='monitor' | 'keep_alive')
-                                           - monitors (status & last_checked_at)
-```
-
-### Key Differences: FastAPI vs. Celery Worker
-
-| Feature | FastAPI API Layer | Celery Worker Layer |
-| :--- | :--- | :--- |
-| **Role** | API Control Plane (HTTP CRUD, user requests) | Data Plane (Network probes, wake-up pings) |
-| **Database Access** | Asynchronous (`AsyncSessionLocal`, `get_db`) via `asyncpg` | Synchronous (`SyncSessionLocal`, `get_sync_db`) via `psycopg2` |
-| **Concurrency Model**| Single-process async event loop (ASGI) | Multi-process / threaded worker pool |
-| **Network Probing** | **Strictly Forbidden** (never blocks on external HTTP) | **Authorized** (bounded execution with timeouts) |
+- **Asynchronous Control Plane**: High-throughput REST API built on FastAPI and SQLAlchemy 2.0 Async for managing monitors and viewing execution telemetry.
+- **Decoupled Distributed Probing**: Outbound HTTP checks are never executed in web requests; all probe workloads are queued to Celery workers backed by Redis.
+- **SSRF & DNS Rebinding Protection**: Target hostnames are pre-resolved and checked against private/reserved IPv4 and IPv6 CIDR blocks; connections pin the resolved IP directly to mitigate time-of-check to time-of-use (TOCTOU) DNS rebinding attacks.
+- **Configurable Keep-Alive Heartbeats**: Supports dual-mode schedules (`monitor`, `keep_alive`, `both`) to periodically ping endpoints and prevent idle cold starts on serverless platforms.
+- **Rate Limiting & Capacity Guards**: Per-key write rate limiting prevents abuse, and a global monitor ceiling safeguards worker and database resources.
+- **Automated Data Retention**: Scheduled Celery Beat maintenance job prunes historical probe results older than a configurable retention window (default 30 days) in bounded batches.
+- **Operational Observability**: Distinct liveness (`/health`) and dependency-aware readiness (`/ready`) endpoints, correlated `X-Request-ID` tracing, and structured JSON logging.
 
 ---
 
-## 3. Worker Tasks: Monitoring vs. Keep-Alive
+## Architecture
 
-PingGuard provides two dedicated background tasks with distinct operational semantics:
+```mermaid
+flowchart TD
+    subgraph Clients
+        User[Client / Dashboard]
+    end
 
-### 1. `execute_ping(monitor_id: int)`
-* **Task Name:** `app.tasks.execute_ping`
-* **Purpose:** Evaluates whether the target service is online and healthy.
-* **Workflow:**
-  1. Loads current `Monitor` from PostgreSQL by `monitor_id`.
-  2. Issues HTTP GET request with a bounded timeout (`timeout=5.0s`).
-  3. Records latency in milliseconds.
-  4. Updates `Monitor.status` (`"up"` for 2xx/3xx, `"degraded"` for 4xx, `"down"` for 5xx/connection failure).
-  5. Updates `Monitor.last_checked_at`.
-  6. Persists historical record to `ping_results` with `check_type="monitor"`.
-  7. Retries transient failures (`Timeout`, `ConnectionError`) up to 3 times with exponential backoff.
+    subgraph ControlPlane[API Service]
+        FastAPI[FastAPI REST API]
+    end
 
-### 2. `execute_keep_alive(monitor_id: int)`
-* **Task Name:** `app.tasks.execute_keep_alive`
-* **Purpose:** Transmits lightweight activity requests to touch services prone to spinning down on idle.
-* **Gatekeeper:** If `keep_alive_enabled` is `False`, the task cleanly skips without sending any HTTP request.
-* **URL Construction:** Safely combines `monitor.url` and `monitor.keep_alive_path` (e.g. `https://xyz.com` + `/health` -> `https://xyz.com/health`).
-* **Telemetry:** Persists a `PingResult` record with `check_type="keep_alive"`.
-* **Important Semantic Boundary:**
-  * Keep-Alive is an activity attempt, **NOT a permanent uptime guarantee**.
-  * Keep-Alive results record transmission outcomes and status codes, but do **NOT** alter `Monitor.status` (uptime health classification is reserved strictly for `execute_ping`).
+    subgraph DataPlane[Data Tier]
+        Postgres[(PostgreSQL 15)]
+        Redis[(Redis 7 Broker)]
+    end
+
+    subgraph WorkerFleet[Worker Fleet]
+        Beat[Celery Beat Scheduler]
+        Workers[Celery Worker Cluster]
+    end
+
+    subgraph Targets[External Networks]
+        Websites[Target HTTP/HTTPS Services]
+    end
+
+    User -->|HTTP Requests + API Key| FastAPI
+    FastAPI -->|Async Read/Write| Postgres
+    FastAPI -->|Enqueue On-Demand Probes| Redis
+    Beat -->|Periodic DB Sweep FOR UPDATE SKIP LOCKED| Postgres
+    Beat -->|Dispatch Due Monitor Tasks| Redis
+    Redis -->|Deliver Tasks| Workers
+    Workers -->|SSRF-Validated Outbound Probe| Websites
+    Workers -->|Sync Persist PingResult & Update Status| Postgres
+```
+
+PingGuard separates control plane API interactions from background network probing to maintain predictable request latencies. Clients interact exclusively with the FastAPI application, which validates input schemas, enforces rate limits, and persists configurations into PostgreSQL. The Celery Beat scheduler periodically sweeps PostgreSQL using row-level locking (`FOR UPDATE SKIP LOCKED`) to claim due monitors and publish execution jobs into Redis without creating duplicate tasks. Horizontally scalable Celery workers consume tasks from Redis, execute outbound HTTP probes through an SSRF-validated network engine, and commit latency and status results back to PostgreSQL. On-demand checks follow the same asynchronous pipeline: the API validates the target and enqueues a Celery task, immediately returning HTTP 202 Accepted.
 
 ---
 
-## 4. Reliability & Concurrency Configurations
+## Quick Start (Docker)
 
-The Celery application in `app/worker.py` is configured with production-grade reliability parameters:
+Ensure Docker and Docker Compose are installed and running on your system.
 
-* **`task_serializer = "json"`, `accept_content = ["json"]`:** Ensures safe JSON-only serialization and prevents arbitrary object exploitation.
-* **`task_acks_late = True`:** Tasks are acknowledged only after execution completes. If a worker crashes during execution, the task remains safely in the queue.
-* **`worker_prefetch_multiplier = 1`:** Workers reserve only 1 task at a time, eliminating head-of-line blocking caused by slow or unresponsive remote endpoints.
-* **`task_soft_time_limit = 10`, `task_time_limit = 15`:** Bounded execution prevents stuck worker processes.
+### 1. Clone and Configure Environment
 
----
-
-## 5. Development Workflow & Starting the Services
-
-For local development, PingGuard uses a 4-terminal architecture:
-
-### Terminal 1: PostgreSQL
-Ensure PostgreSQL is running on port `5432` and apply migrations:
-```powershell
-alembic upgrade head
-```
-
-### Terminal 2: Redis
-Start the Redis message broker on port `6379`:
-```powershell
-redis-server
-```
-
-### Terminal 3: FastAPI Web Server
-Start the API server:
-```powershell
-.\.venv\Scripts\uvicorn.exe app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Terminal 4: Celery Worker
-Start the Celery worker process:
-> **Windows Note:** Because billiard's prefork pool is not supported on Windows, start the worker using `-P solo` or `-P threads`:
-```powershell
-.\.venv\Scripts\celery.exe -A app.worker.celery_app worker -l info -P solo
-```
-
-### Terminal 5: Celery Beat (The Scheduling Heartbeat)
-Start the Celery Beat periodic scheduler process:
-> **Singleton Note:** Celery Beat MUST run as exactly one instance (`replicas = 1`).
-```powershell
-.\.venv\Scripts\celery.exe -A app.worker.celery_app beat -l info
-```
-
----
-
-## 6. Chapter 4: Celery Beat Scheduling Architecture
-
-Chapter 4 introduces automated, database-driven scheduling that decides **WHEN** checks are performed without performing any network I/O in the scheduler:
-
-* **Single Static Sweep:** A single entry `"sweep-due-monitors"` in `celery_app.conf.beat_schedule` fires periodically (default `15.0s`, configurable via `SWEEP_INTERVAL_SECONDS`).
-* **Dual Independent Schedules:**
-  * **Monitoring Schedule:** Queries `next_check_at <= now` for monitors in mode `monitor` or `monitor_and_keep_alive`.
-  * **Keep-Alive Schedule:** Queries `next_keep_alive_at <= now` for monitors with `keep_alive_enabled=True` in mode `keep_alive` or `monitor_and_keep_alive`.
-* **Concurrency-Safe Row Claiming:** Uses `SELECT ... FOR UPDATE SKIP LOCKED` (`with_for_update(skip_locked=True)`), ensuring overlapping sweep runs skip already-locked rows without duplicate task dispatch.
-* **Timestamp Advancement:** Timestamps advance forward based on each monitor's configured interval from the reference sweep time (`now + check_interval_seconds`).
-* **Anti-Storm Recovery:** Missed schedules after Beat restarts trigger exactly ONE check per overdue monitor, advancing from the current time rather than replaying missed historical intervals.
-
----
-
-## 7. Chapter 5: Network Resilience & SSRF Defense (`app/net.py`)
-
-Chapter 5 equips the Celery worker probing fleet with a hardened, bounded, observable network execution engine powered by `httpx.AsyncClient`:
-
-* **Granular Phased Timeouts:** Separates request execution into connect (2.0s), read (5.0s), write (5.0s), and pool acquisition (2.0s), eliminating worker starvation.
-* **Multi-Layer SSRF Defense:** Rejects loopback (`127.0.0.0/8`, `::1`), private RFC1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local IPs, and cloud instance metadata (`169.254.169.254`).
-* **DNS Resolution & Rebinding Mitigation:** Resolves all hostnames via `socket.getaddrinfo` before socket establishment, verifying every candidate IP against the blocklist.
-* **HTTP Redirect Interception:** Utilizes `httpx` response event hooks to validate target `Location` headers on HTTP 3xx responses. Redirects to private or cloud metadata IPs are intercepted and aborted before connection.
-* **Memory-Bounded Streaming:** Streams response bodies with a hard 1MB (`1,048,576` bytes) ceiling using `client.stream("GET", url)`. Responses exceeding the limit abort gracefully to protect workers from OOM crashes.
-* **Monotonic Latency Tracking:** Latency is calculated using `time.monotonic()`, immune to NTP adjustments and system clock jumps.
-* **Structured Outcome Classification:** Normalizes status codes and errors into `PingOutcome` (`UP`, `DEGRADED`, `DOWN`, `UNREACHABLE`).
-* **Credential Redaction:** Sanitizes basic authentication credentials (`user:pass@`) in logs and database entries.
-* **Strict Keep-Alive Independence:** Keep-Alive activity pings record telemetry to `ping_results` (`check_type="keep_alive"`), but **NEVER alter `Monitor.status`**.
-
----
-
-## 8. Running the Automated Test Suite
-
-PingGuard includes an automated unit and integration test suite covering API validation, database persistence, app restart durability, Celery tasks, Celery Beat scheduling, HTTPX network resilience, and Docker orchestration integrity.
-
-The test suite enforces a hard safety guard: tests must run against an isolated test database whose name ends in `_test`.
-
-### PowerShell
-```powershell
-$env:TEST_DATABASE_URL = "postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
-pytest -q
-```
-
-### Bash
 ```bash
-export TEST_DATABASE_URL="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
-pytest -q
-```
-
----
-
-## 9. Chapter 6: Container Orchestration (Docker & Docker Compose)
-
-Chapter 6 packages the complete PingGuard architecture into an orchestrated, multi-container environment using Docker and Docker Compose (v2):
-
-```
-                          Inbound Client Traffic (Port 8000)
-                                        │
-                                        ▼
-    ┌────────────────────────────────────────────────────────────────────────┐
-    │              pingguard_internal_net (Docker Bridge)                    │
-    │                                                                        │
-    │   ┌───────────────────────────┐    ┌───────────────────────────────┐   │
-    │   │         web (API)         │    │      worker (Pool xN)         │   │
-    │   │      FastAPI / Uvicorn    │    │      Celery Worker Fleet      │   │
-    │   │         Port: 8000        │    │    Concurrency: 4 / Replica   │   │
-    │   └─────────────┬─────────────┘    └───────────────┬───────────────┘   │
-    │                 │                                  │                   │
-    │                 │  ┌───────────────────────────────┼───────────────┐   │
-    │                 │  │                               │               │   │
-    │                 ▼  ▼                               ▼               ▼   │
-    │   ┌───────────────────────────┐    ┌───────────────────────────┐   │   │
-    │   │            db             │    │           redis           │   │   │
-    │   │       PostgreSQL 15       │    │          Redis 7          │   │   │
-    │   │      Internal: :5432      │    │      Internal: :6379      │   │   │
-    │   └─────────────┬─────────────┘    └───────────────┬───────────┘   │   │
-    │                 │                                  │               │   │
-    │                 │                                  │   ┌───────────┴─┐ │
-    │                 │                                  │   │  scheduler  │ │
-    │                 │                                  └───┤ Celery Beat │ │
-    │                 │                                      │(Singleton=1)│ │
-    │                 │                                      └─────────────┘ │
-    └─────────────────┼──────────────────────────────────┼───────────────────┘
-                      ▼                                  ▼
-             pingguard_pgdata                   pingguard_redis_data
-            (PostgreSQL Volume)                    (Redis Volume)
-            [DURABLE STATE STORE]              [TRANSIENT MESSAGE QUEUE]
-```
-
-### 1. The 5 Compose Services
-* **`db` (`postgres:15-alpine`):** Authoritative relational store. Data persists via named volume `pingguard_pgdata`. Health check: `pg_isready`.
-* **`redis` (`redis:7-alpine`):** Celery task broker and backend. State persists via `pingguard_redis_data`. Health check: `redis-cli ping`.
-* **`web` (`pingguard-app:latest`):** FastAPI control plane. Port `8000:8000` published to host. Depends on `db` and `redis` being healthy.
-* **`worker` (`pingguard-app:latest`):** Celery probing workers executing Chapter 5 resilient network calls. Horizontally scalable.
-* **`scheduler` (`pingguard-app:latest`):** Celery Beat periodic scheduler. **STRICT SINGLETON (`replicas: 1`)**.
-
-### 2. Docker Compose Commands
-
-#### Step 0: Configure Environment & Secrets
-Copy the environment template, generate a cryptographically random secret, and set `POSTGRES_PASSWORD`:
-```bash
+git clone https://github.com/AmanYdv77/PingGuard.git
+cd PingGuard
 cp .env.example .env
-python -c "import secrets; print(secrets.token_urlsafe(24))"
 ```
-Edit `.env` to configure your generated `POSTGRES_PASSWORD` and matching `DATABASE_URL`.
 
-#### Step 1: Run One-Shot Database Migrations
-Migrations must NOT run concurrently from every replica on container startup:
+Generate secure secrets for PostgreSQL and the API authentication key:
+
 ```bash
-docker compose run --rm web alembic upgrade head
+# Generate database password and API key
+python -c "import secrets; print('POSTGRES_PASSWORD=' + secrets.token_urlsafe(24)); print('API_KEY=' + secrets.token_urlsafe(32))"
 ```
 
-#### Step 2: Build and Start the Entire Cluster
+Paste these values into your `.env` file, ensuring `API_KEY` is at least 24 characters long.
+
+### 2. Launch Services
+
 ```bash
 docker compose up --build -d
 ```
 
-#### Step 3: Inspect Service Health & Real-time Logs
+Verify service containers are healthy:
+
 ```bash
 docker compose ps
-docker compose logs -f
 ```
 
-#### Step 4: Horizontally Scale Probing Workers
-Scale worker replicas dynamically to handle increased probe volume:
-```bash
-docker compose up --scale worker=4 -d
-```
-*(Never scale `scheduler`; Celery Beat must always remain a singleton).*
+The interactive OpenAPI documentation is now available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-#### Step 5: Stop the Cluster (Preserving Database State)
+### 3. Register a Monitor and Read Results
+
+#### Linux / macOS (Bash)
+
 ```bash
-docker compose down
+# Set your API Key
+API_KEY="your-generated-api-key"
+
+# Register a new monitor
+curl -X POST http://localhost:8000/monitors/ \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{
+    "name": "Example Domain",
+    "url": "https://example.com",
+    "check_interval_seconds": 60,
+    "mode": "monitor"
+  }'
+
+# Trigger an immediate on-demand probe (returns HTTP 202)
+curl -X POST http://localhost:8000/monitors/1/check \
+  -H "X-API-Key: $API_KEY"
+
+# Retrieve probe telemetry and execution history
+curl -X GET http://localhost:8000/monitors/1/results \
+  -H "X-API-Key: $API_KEY"
 ```
-*(Named volumes `pingguard_pgdata` and `pingguard_redis_data` survive teardowns).*
+
+#### Windows (PowerShell)
+
+```powershell
+$headers = @{
+    "Content-Type" = "application/json"
+    "X-API-Key" = "your-generated-api-key"
+}
+
+# Register a new monitor
+$body = @{
+    name = "Example Domain"
+    url = "https://example.com"
+    check_interval_seconds = 60
+    mode = "monitor"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:8000/monitors/" -Method Post -Headers $headers -Body $body
+
+# Trigger an immediate on-demand probe
+Invoke-RestMethod -Uri "http://localhost:8000/monitors/1/check" -Method Post -Headers $headers
+
+# Retrieve probe telemetry and execution history
+Invoke-RestMethod -Uri "http://localhost:8000/monitors/1/results" -Method Get -Headers $headers
+```
 
 ---
 
-## 10. Post-Chapter-6 Cloud Deployment Handoff
+## Local Development
 
-For production cloud deployments (AWS, GCP, Render, Kubernetes):
-1. **Managed Data Stores:** Use AWS RDS / GCP Cloud SQL for PostgreSQL and ElastiCache / Memorystore for Redis.
-2. **Release-Phase Migrations:** Execute `alembic upgrade head` in deployment pipelines before releasing new containers.
-3. **External Cluster Monitoring:** Monitor PingGuard's external health at `GET /health` rather than having PingGuard monitor itself.
+### 1. Prerequisites
+
+- Python 3.12+
+- Docker (for isolated PostgreSQL and Redis service containers)
+
+### 2. Setup Virtual Environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements-dev.txt
+```
+
+### 3. Start Test Service Containers
+
+Start dedicated test containers matching the test suite safety guards:
+
+```bash
+# Start test database (database name must end with _test)
+docker run --name pingguard-test-db -e POSTGRES_PASSWORD=testpass -e POSTGRES_DB=pingguard_test -p 55432:5432 -d postgres:15-alpine
+
+# Start test Redis broker
+docker run --name pingguard-test-redis -p 6379:6379 -d redis:7-alpine
+```
+
+### 4. Execute Test Suite & Quality Checks
+
+```bash
+# Set mandatory test database URL
+export TEST_DATABASE_URL="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+# On Windows PowerShell: $env:TEST_DATABASE_URL="postgresql+asyncpg://postgres:testpass@localhost:55432/pingguard_test"
+
+# Run tests with coverage
+pytest --cov=app --cov-report=term-missing -q
+
+# Run static analysis and formatting
+ruff check .
+ruff format --check .
+mypy app
+```
+
+---
+
+## Configuration Reference
+
+Every application setting is typed and validated in `app/config.py` using Pydantic Settings:
+
+| Environment Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `ENVIRONMENT` | `dev` | Application runtime environment (`dev`, `test`, `prod`). Enforces strong credentials when not in test. |
+| `API_KEY` | *Required* | Pre-shared API key for `/monitors/*` routes. Minimum length: 24 characters. |
+| `CORS_ALLOWED_ORIGINS` | `[]` | Comma-separated list of allowed browser origins. Wildcards (`*`) are strictly rejected. |
+| `DATABASE_URL` | *Required* | PostgreSQL connection string (`postgresql+asyncpg://...` or `postgresql://...`). |
+| `REDIS_BROKER_URL` | `redis://localhost:6379/0` | Redis connection URL for Celery message broker. |
+| `REDIS_RESULT_BACKEND_URL` | `redis://localhost:6379/1` | Redis connection URL for transient Celery task results. |
+| `SWEEP_INTERVAL_SECONDS` | `15.0` | Frequency in seconds between Celery Beat database polling sweeps. |
+| `CELERYBEAT_SCHEDULE_FILENAME`| `celerybeat-schedule` | Storage filename for Celery Beat persistent schedule timestamps. |
+| `SWEEP_BATCH_SIZE` | `500` | Maximum number of due monitors claimed per database transaction. |
+| `SWEEP_MAX_BATCHES` | `20` | Maximum consecutive batches claimed during a single scheduler cycle. |
+| `HTTP_CONNECT_TIMEOUT` | `2.0` | Maximum seconds allowed to establish TCP/TLS connection during probes. |
+| `HTTP_READ_TIMEOUT` | `5.0` | Maximum seconds allowed waiting for network response data per read. |
+| `HTTP_WRITE_TIMEOUT` | `5.0` | Maximum seconds allowed to write outbound request bytes over socket. |
+| `HTTP_POOL_TIMEOUT` | `2.0` | Maximum seconds allowed waiting for a pooled HTTP connection. |
+| `HTTP_MAX_RESPONSE_BYTES` | `1048576` | Maximum response payload size read into memory (1 MB). Prevents memory exhaustion. |
+| `HTTP_MAX_REDIRECTS` | `5` | Maximum number of HTTP redirect hops followed before halting. |
+| `HTTP_USER_AGENT` | `PingGuard/1.0` | Outbound User-Agent header for standard uptime monitor probes. |
+| `HTTP_KEEP_ALIVE_USER_AGENT` | `PingGuard-KeepAlive/1.0`| Outbound User-Agent header for keep-alive heartbeat probes. |
+| `PROBE_TOTAL_TIMEOUT_SECONDS` | `8.0` | Hard deadline for entire probe execution across DNS, TLS, redirects, and streaming. |
+| `CELERY_SOFT_TIME_LIMIT` | `10` | Worker soft execution limit in seconds. Must be `>= probe_total_timeout_seconds + 2`. |
+| `CELERY_HARD_TIME_LIMIT` | `15` | Worker hard execution limit in seconds. Must be `>= celery_soft_time_limit + 3`. |
+| `RATE_LIMIT_WRITES_PER_MINUTE` | `60` | Fixed-window write request limit per API key (or client IP fallback). |
+| `MAX_MONITORS` | `100` | Global upper bound on registered monitors allowed in database. |
+| `PING_RESULTS_RETENTION_DAYS` | `30` | Retention window in days. Older probe results are pruned daily. |
+| `RETENTION_BATCH_SIZE` | `10000` | Maximum rows deleted per commit transaction in data retention task. |
+| `LOG_LEVEL` | `INFO` | Logging threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
+| `LOG_JSON` | `True` | Emits structured JSON logs containing timestamp, level, logger, message, and request ID. |
+
+---
+
+## API Overview
+
+All `/monitors` endpoints require authentication via the `X-API-Key` HTTP header. Write operations are subject to rate limiting (`60 req/min`).
+
+| Method | Path | Authentication | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | None (Public) | Service liveness probe. Returns HTTP 200 with service version. |
+| `GET` | `/ready` | None (Public) | Service readiness probe. Returns HTTP 200 if PostgreSQL and Redis are reachable, else HTTP 503. |
+| `POST` | `/monitors/` | `X-API-Key` | Register a new monitor endpoint. Subject to monitor capacity limit (`409 Conflict`). |
+| `GET` | `/monitors/` | `X-API-Key` | List registered monitors with offset (`skip`) and pagination (`limit`). |
+| `GET` | `/monitors/{id}` | `X-API-Key` | Retrieve monitor definition, current status, and scheduling metadata. |
+| `PATCH`| `/monitors/{id}` | `X-API-Key` | Partially update monitor configuration, intervals, or keep-alive parameters. |
+| `PUT` | `/monitors/{id}` | `X-API-Key` | Update monitor configuration. |
+| `DELETE`| `/monitors/{id}` | `X-API-Key` | Delete monitor and automatically cascade delete all associated probe results. |
+| `GET` | `/monitors/{id}/results` | `X-API-Key` | Retrieve historical probe results with optional `check_type` filtering. |
+| `POST` | `/monitors/{id}/check` | `X-API-Key` | Enqueue an on-demand probe to Celery. Returns HTTP 202 Accepted. |
+
+---
+
+## Security Model
+
+PingGuard implements defensive controls across authentication, network boundary protection, resource governance, and logging:
+
+### 1. Static API-Key Authentication
+- All `/monitors/*` routes are protected using FastAPI `APIKeyHeader`.
+- Header comparison uses constant-time string comparison (`secrets.compare_digest`) on UTF-8 bytes to defend against timing attacks.
+- Missing or invalid keys return HTTP 401 Unauthorized with a generic error payload. API keys are never written to logs or error messages.
+
+### 2. SSRF Protection & DNS-Rebinding Mitigation
+- Outbound probing target URLs are validated before requests are dispatched.
+- Hostnames are resolved to IP addresses via asynchronous DNS lookup. All returned IPv4 and IPv6 addresses are checked against explicit CIDR blocklists covering private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), and cloud metadata services (`169.254.169.254`).
+- **IP Pinning**: To prevent Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding attacks, outbound HTTP connections are established directly against the validated IP literal, preserving the original hostname in the HTTP `Host` header and TLS Server Name Indication (SNI).
+- **Redirect Isolation**: Automatic HTTP redirect following is disabled in the client transport. Redirect hops are resolved manually, and each intermediate destination undergoes independent DNS resolution and SSRF validation before traversal.
+
+### 3. Resource & Memory Bounds
+- Outbound HTTP response streaming enforces an absolute ceiling (`http_max_response_bytes`, default 1 MB). Sockets close immediately upon exceeding the limit.
+- Probes run within an overall timeout deadline (`probe_total_timeout_seconds`, default 8.0s) managed via `asyncio.timeout`.
+- Write requests are governed by fixed-window rate limiting in Redis (`rl:<key>`), returning HTTP 429 Too Many Requests with a `Retry-After` header when exceeded.
+
+### 4. Logging & Secret Scrubbing
+- URLs containing inline basic authentication credentials (e.g. `https://user:pass@example.com`) are scrubbed before persistence or logging.
+- Structured JSON logs capture contextual metadata, `X-Request-ID`, and errors without logging request payloads or credentials.
+
+---
+
+## Project Structure
+
+```
+pingguard/
+├── .github/
+│   ├── dependabot.yml              # Weekly dependency update schedule
+│   └── workflows/
+│       └── ci.yml                  # GitHub Actions CI workflow (lint, test, build)
+├── alembic/
+│   ├── env.py                      # Alembic migration environment
+│   └── versions/                   # Schema migration versions
+├── app/
+│   ├── __init__.py                 # Version declaration (1.0.0)
+│   ├── config.py                   # Centralised Pydantic settings & validation
+│   ├── db.py                       # SQLAlchemy async & sync session factories
+│   ├── enums.py                    # MonitorStatus, MonitorMode, PingOutcome
+│   ├── logging_config.py           # Structured JSON logging & request ID filter
+│   ├── main.py                     # FastAPI web application & REST routes
+│   ├── models.py                   # SQLAlchemy ORM models & table constraints
+│   ├── net.py                      # SSRF-hardened outbound HTTP probing engine
+│   ├── ratelimit.py                # Redis & in-memory fixed-window rate limiters
+│   ├── schemas.py                  # Pydantic request and response schemas
+│   ├── security.py                 # Constant-time API key verification
+│   ├── ssrf.py                     # IP blocklists, validation & credential redaction
+│   ├── status.py                   # Outcome-to-status & HTTP code classification
+│   ├── tasks.py                    # Celery tasks (probe, keep-alive, retention)
+│   ├── urls.py                     # URL normalization and safe joining
+│   └── worker.py                   # Celery application & Celery Beat schedule
+├── tests/
+│   ├── conftest.py                 # Pytest fixtures & _test database safety guard
+│   ├── test_api.py                 # REST endpoint behavioural tests
+│   ├── test_config.py              # Configuration & credential validation tests
+│   ├── test_imports.py             # Subprocess import isolation tests
+│   ├── test_logging.py             # Structured logging & X-Request-ID tests
+│   ├── test_models.py              # ORM constraints & index tests
+│   ├── test_net.py                 # SSRF, DNS pinning, & latency tests
+│   ├── test_orchestration.py       # Health contract & configuration tests
+│   ├── test_ratelimit.py           # Rate limiting & monitor capacity tests
+│   ├── test_retention.py           # Data retention task & batching tests
+│   ├── test_scheduler.py           # Celery Beat sweep & concurrency tests
+│   ├── test_security.py            # API key authentication tests
+│   ├── test_status.py              # Status mapping & HTTP classification tests
+│   └── test_tasks.py               # Worker task execution & retry tests
+├── .env.example                    # Environment variable template
+├── .pre-commit-config.yaml         # Pre-commit hooks (ruff, gitleaks, yaml)
+├── Dockerfile                      # Multi-stage production container build
+├── docker-compose.yml              # 5-service orchestration definition
+├── pyproject.toml                  # PEP 621 project metadata & tool configurations
+├── requirements.in                 # Human-edited direct runtime dependencies
+├── requirements.txt                # Fully pinned runtime dependencies with hashes
+├── requirements-dev.in             # Human-edited direct dev dependencies
+└── requirements-dev.txt            # Fully pinned dev dependencies with hashes
+```
+
+---
+
+## Testing & Continuous Integration
+
+PingGuard maintains an automated test suite executed via `pytest`.
+
+### Database Protection Guard
+Tests are physically prevented from executing against non-test databases. `tests/conftest.py` inspects `TEST_DATABASE_URL` at import time and strictly requires the database name to end with `_test`. If `TEST_DATABASE_URL` is unset or points to a non-test database, execution halts immediately with return code 2 before any database connection or model import occurs.
+
+### Automated CI Pipeline
+Every push and pull request to `main` triggers `.github/workflows/ci.yml`:
+1. **Lint & Style**: Enforces clean code via `ruff check .` and formatting via `ruff format --check .`.
+2. **Type Checking**: Validates static type safety across `app/` using `mypy`.
+3. **Automated Testing**: Runs the complete test suite against live PostgreSQL 15 and Redis 7 service containers, enforcing code coverage reporting.
+4. **Container Build**: Validates `docker-compose.yml` syntax and builds the production Docker image with cryptographic hash verification (`--require-hashes`).
+
+---
+
+## Known limitations
+
+- **Single API key and single tenant**: Authentication uses one shared API key. Multi-user accounts, organization tenancy, and role-based permissions are planned for a future update.
+- **Single Celery Beat scheduler**: The periodic sweep scheduler runs as a single instance; there is currently no active-active high-availability failover if the scheduler process stops.
+- **No built-in alerting system**: PingGuard records uptime and latency telemetry, but external notifications (email, Discord, Slack, SMS) are not yet integrated.
+- **Redis scope**: Redis is currently used solely as the Celery task broker and write rate limiter, rather than for application query caching, Pub/Sub, or Redis Streams.
+- **Headless service**: PingGuard is strictly a backend REST API service; a web dashboard interface is not included in this repository.
+
+## Design decisions
+
+- **Decoupled API and worker fleet**: The FastAPI application only validates requests and saves data to PostgreSQL—it never pings target websites directly. All outbound HTTP probes run asynchronously in Celery workers, ensuring slow or timing-out websites never block API responses.
+- **Database-driven sweeps (`FOR UPDATE SKIP LOCKED`)**: Rather than registering a separate Celery schedule for every individual monitor, Celery Beat runs a periodic sweep over PostgreSQL. Row-level locking (`FOR UPDATE SKIP LOCKED`) lets workers claim due monitors safely without duplicate checks.
+- **SSRF and DNS-rebinding protection**: Target hostnames are resolved and checked against private and loopback IP blocklists before connecting. Outbound probes pin the connection directly to the validated IP address, preventing attackers from switching IP addresses between check time and connection time.
+
+---
+
+## License
+
+This project is licensed under the terms of the MIT license. See [LICENSE](LICENSE) for details.
