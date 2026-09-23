@@ -1,24 +1,12 @@
-[tool.poetry]
+[project]
 name = "pingguard"
 version = "1.0.0"
 description = "Distributed Uptime Monitoring System"
-authors = ["Aman Yadav <204555676+AmanYdv77@users.noreply.github.com>"]
 readme = "README.md"
-packages = [{include = "app"}]
-
-[tool.poetry.dependencies]
-python = "^3.12"
-fastapi = "^0.115"
-uvicorn = {extras = ["standard"], version = "^0.32"}
-pydantic = "^2.9"
-pydantic-settings = "^2.5"
-sqlalchemy = "^2.0.36"
-asyncpg = "^0.30.0"
-psycopg2-binary = "^2.9.10"
-alembic = "^1.14.0"
-celery = {extras = ["redis"], version = "^5.4.0"}
-redis = "^5.0.0"
-httpx = "^0.28.0"
+requires-python = ">=3.12"
+authors = [
+    { name = "Aman Yadav", email = "204555676+AmanYdv77@users.noreply.github.com" },
+]
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,0 +1,11 @@
+# Instructions to update development dependencies:
+# 1. Edit direct dependencies in requirements-dev.in
+# 2. Run: uv pip compile requirements-dev.in -o requirements-dev.txt --python-version 3.12 --generate-hashes
+#
+-c requirements.txt
+-r requirements.in
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.5.0
+mypy>=1.10
+pre-commit>=3.7

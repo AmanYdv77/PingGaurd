@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Install dependencies into the user local directory for clean multi-stage transfer
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir --require-hashes -r requirements.txt
 
 # ------------------------------------------------------------------------------
 # Stage 2: Final Minimal Runtime Container

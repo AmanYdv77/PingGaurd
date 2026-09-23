@@ -1,0 +1,19 @@
+# requirements.in - Direct runtime dependencies for PingGuard.
+#
+# To compile and update locked pins with hashes, run:
+#   uv pip compile requirements.in -o requirements.txt --python-version 3.12 --generate-hashes
+#
+# To upgrade dependencies:
+#   uv pip compile --upgrade requirements.in -o requirements.txt --python-version 3.12 --generate-hashes
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+sqlalchemy>=2.0.36
+asyncpg>=0.30.0
+psycopg2-binary>=2.9.10
+alembic>=1.14.0
+celery[redis]>=5.4.0
+redis>=5.0.0
+httpx>=0.28.0
