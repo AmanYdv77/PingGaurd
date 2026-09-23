@@ -5,10 +5,10 @@ Central source of truth for monitor statuses, monitor execution modes,
 and network probe outcomes across the application.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class MonitorStatus(str, Enum):
+class MonitorStatus(StrEnum):
     """
     Lifecycle and operational health state of a monitor.
 
@@ -21,7 +21,7 @@ class MonitorStatus(str, Enum):
     PENDING = "pending"
 
 
-class MonitorMode(str, Enum):
+class MonitorMode(StrEnum):
     """
     Execution mode controlling scheduler eligibility and check behaviors.
 
@@ -33,7 +33,7 @@ class MonitorMode(str, Enum):
     MONITOR_AND_KEEP_ALIVE = "monitor_and_keep_alive"
 
 
-class PingOutcome(str, Enum):
+class PingOutcome(StrEnum):
     """
     Classification outcome returned by the network prober.
     """

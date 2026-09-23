@@ -26,7 +26,7 @@ def test_outcome_to_status_explicit_mappings():
 def test_outcome_to_status_unhandled_raises():
     """Verify an unexpected/unhandled outcome raises ValueError."""
     with pytest.raises(ValueError):
-        outcome_to_status("not-an-outcome")  # type: ignore[arg-type]
+        outcome_to_status("not-an-outcome")  # type: ignore[arg-type]  # Deliberately invalid type to test runtime rejection
 
 
 @pytest.mark.parametrize(

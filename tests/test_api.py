@@ -4,22 +4,20 @@ Converted to idiomatic pytest functions with standard fixtures.
 """
 
 import ast
-from datetime import datetime, timezone
+import logging
 import os
-from pathlib import Path
 import sys
 import tomllib
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
-import logging
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
-from app.db import DATABASE_URL, get_db
+import pytest
 from app.main import app
 from app.models import Monitor, PingResult
-from app.enums import MonitorMode, MonitorStatus
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
+
 from tests.conftest import TEST_API_KEY
 
 
@@ -582,7 +580,7 @@ def test_ping_result_orm_relationship_both_check_types(db_session) -> None:
     db_session.flush()
     mid = monitor.id
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pr_monitor = PingResult(
         monitor_id=mid,
         check_type="monitor",
@@ -634,7 +632,7 @@ def test_cascade_delete_monitor_and_ping_results(db_session) -> None:
         check_type="monitor",
         status_code=200,
         latency_ms=99.0,
-        checked_at=datetime.now(timezone.utc),
+        checked_at=datetime.now(UTC),
     )
     db_session.add(pr)
     db_session.commit()
@@ -732,7 +730,9 @@ def test_check_unreachable_status_does_not_break_list_monitors(auth_client: Test
 
 
 def test_unreachable_status_db_constraint_rejected(db_session) -> None:
-    """Verify inserting status='unreachable' directly into monitors table violates DB CHECK constraint."""
+    """
+    Verify inserting status='unreachable' directly into monitors table violates DB CHECK constraint.
+    """
     monitor = Monitor(
         name="Invalid Status Target",
         url="https://invalid-status.example.com",
@@ -787,7 +787,7 @@ def test_api_architecture_contains_no_outbound_probing() -> None:
     zero references to app.net, robust_ping, run_in_executor, or httpx.
     """
     main_path = Path(__file__).resolve().parent.parent / "app" / "main.py"
-    with open(main_path, "r", encoding="utf-8") as f:
+    with open(main_path, encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename="main.py")
 
     disallowed_names = {"robust_ping", "run_in_executor", "httpx"}
@@ -881,6 +881,7 @@ def test_cors_disallowed_origin_no_headers(client: TestClient) -> None:
 def test_cors_allowed_origin_preflight_and_disallowed() -> None:
     """Preflight from allowed origin returns CORS headers; disallowed origin gets none."""
     import importlib
+
     from app.config import get_settings
 
     old_origins = os.environ.get("CORS_ALLOWED_ORIGINS")
@@ -1006,8 +1007,9 @@ def test_write_rate_limit_redis_failure_fails_open(
 ) -> None:
     """When Redis encounters an error, rate limiter fails open with logged warning."""
     import app.main
-    from app.ratelimit import get_rate_limiter, logger as rl_logger
     import redis.exceptions
+    from app.ratelimit import get_rate_limiter
+    from app.ratelimit import logger as rl_logger
 
     class FailingRedisLimiter:
         async def hit(self, key: str, limit: int, window_seconds: int) -> tuple[bool, int]:
@@ -1101,7 +1103,10 @@ def test_monitor_cap_enforced(auth_client: TestClient) -> None:
 # Additional Behaviour Tests for Untested Paths
 # =========================================================================
 def test_create_monitor_validation_errors(auth_client: TestClient) -> None:
-    """Verify POST /monitors returns HTTP 422 for invalid schemes, missing keep-alive intervals, and out-of-range intervals."""
+    """
+    Verify POST /monitors returns HTTP 422 for invalid schemes,
+    missing keep-alive intervals, and out-of-range intervals.
+    """
     # Invalid schemes
     assert (
         auth_client.post("/monitors/", json={"name": "FTP", "url": "ftp://example.com"}).status_code
@@ -1216,7 +1221,10 @@ def test_patch_monitor_partial_updates(auth_client: TestClient) -> None:
 def test_delete_monitor_cascade_deletes_ping_results_api(
     auth_client: TestClient, db_session
 ) -> None:
-    """Verify API DELETE /monitors/{id} deletes the monitor and cascades to delete all attached ping_results."""
+    """
+    Verify API DELETE /monitors/{id} deletes the monitor
+    and cascades to delete all attached ping_results.
+    """
     create_resp = auth_client.post(
         "/monitors/",
         json={
@@ -1228,7 +1236,7 @@ def test_delete_monitor_cascade_deletes_ping_results_api(
     mid = create_resp.json()["id"]
 
     # Add 3 PingResult records for this monitor
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for i in range(3):
         db_session.add(
             PingResult(
@@ -1254,7 +1262,10 @@ def test_delete_monitor_cascade_deletes_ping_results_api(
 
 
 def test_get_monitor_results_pagination_bounds(auth_client: TestClient, db_session) -> None:
-    """Verify GET /monitors/{id}/results validates pagination bounds (limit < 1 -> 422, limit > 500 -> 422)."""
+    """
+    Verify GET /monitors/{id}/results validates pagination bounds
+    (limit < 1 -> 422, limit > 500 -> 422).
+    """
     create_resp = auth_client.post(
         "/monitors/",
         json={
@@ -1266,7 +1277,7 @@ def test_get_monitor_results_pagination_bounds(auth_client: TestClient, db_sessi
     mid = create_resp.json()["id"]
 
     # Seed 10 PingResult entries
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for i in range(10):
         db_session.add(
             PingResult(

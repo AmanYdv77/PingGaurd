@@ -6,6 +6,7 @@ Uses constant-time comparison to prevent timing side-channel attacks.
 """
 
 import secrets
+
 from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 

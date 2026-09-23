@@ -11,6 +11,7 @@ Configures the Celery distributed task queue backed by Redis:
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import setup_logging
+
 from app.config import get_settings
 from app.logging_config import configure_logging
 

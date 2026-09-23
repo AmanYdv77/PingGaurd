@@ -5,8 +5,9 @@ Defines the core Pydantic v2 data contracts for incoming requests and outgoing r
 including the Optional Keep-Alive configuration.
 """
 
-from datetime import datetime
 import ipaddress
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from app.enums import MonitorMode, MonitorStatus
@@ -35,12 +36,13 @@ def validate_keep_alive_rules(
     Central validation helper for consistency between mode, keep_alive_enabled,
     keep_alive_interval_seconds, and keep_alive_path.
     """
-    if mode == MonitorMode.MONITOR:
-        if keep_alive_enabled is True:
-            raise ValueError("keep_alive_enabled must be False when mode is 'monitor'")
-    elif mode in (MonitorMode.KEEP_ALIVE, MonitorMode.MONITOR_AND_KEEP_ALIVE):
-        if keep_alive_enabled is False:
-            raise ValueError(f"keep_alive_enabled must be True when mode is '{mode.value}'")
+    if mode == MonitorMode.MONITOR and keep_alive_enabled is True:
+        raise ValueError("keep_alive_enabled must be False when mode is 'monitor'")
+    elif (
+        mode in (MonitorMode.KEEP_ALIVE, MonitorMode.MONITOR_AND_KEEP_ALIVE)
+        and keep_alive_enabled is False
+    ):
+        raise ValueError(f"keep_alive_enabled must be True when mode is '{mode.value}'")
 
     if keep_alive_enabled is True:
         if keep_alive_interval_seconds is None:
@@ -88,20 +90,26 @@ class MonitorCreate(BaseModel):
     )
     mode: MonitorMode = Field(
         default=MonitorMode.MONITOR,
-        description="Determines whether the monitor performs health monitoring, keep-alive activity, or both.",
+        description=(
+            "Determines whether the monitor performs health monitoring, "
+            "keep-alive activity, or both."
+        ),
     )
     keep_alive_enabled: bool = Field(
         default=False,
         description=(
-            "Enables periodic lightweight requests intended to provide activity to idle-prone services. "
-            "Behavior depends on the hosting provider and is NOT a guarantee of permanent uptime."
+            "Enables periodic lightweight requests intended to provide activity "
+            "to idle-prone services. Behavior depends on the hosting provider and "
+            "is NOT a guarantee of permanent uptime."
         ),
     )
     keep_alive_interval_seconds: int | None = Field(
         default=None,
         ge=15,
         le=86400,
-        description="Interval between keep-alive attempts in seconds (minimum 15s, maximum 86400s).",
+        description=(
+            "Interval between keep-alive attempts in seconds (minimum 15s, maximum 86400s)."
+        ),
     )
     keep_alive_path: str | None = Field(
         default=None,
@@ -169,7 +177,9 @@ class MonitorRead(BaseModel):
     status: MonitorStatus = Field(..., description="Current health status of the endpoint.")
     last_checked_at: datetime | None = Field(
         default=None,
-        description="UTC timestamp of the most recent probe execution (None if pending initial check).",
+        description=(
+            "UTC timestamp of the most recent probe execution (None if pending initial check)."
+        ),
     )
     next_check_at: datetime | None = Field(
         default=None,
@@ -262,7 +272,9 @@ class MonitorUpdate(BaseModel):
     keep_alive_path: str | None = Field(
         default=None,
         max_length=255,
-        description="Updated keep-alive relative endpoint path. Omit or pass null to leave unchanged.",
+        description=(
+            "Updated keep-alive relative endpoint path. Omit or pass null to leave unchanged."
+        ),
     )
 
     @field_validator("keep_alive_path")

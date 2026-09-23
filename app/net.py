@@ -6,7 +6,6 @@ streaming response bounds, monotonic latency tracking, and structured outcome cl
 """
 
 import asyncio
-from dataclasses import dataclass
 import inspect
 import ipaddress
 import logging
@@ -14,12 +13,22 @@ import socket
 import ssl
 import time
 import urllib.parse
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
+
 from app.config import get_settings
 from app.enums import PingOutcome
+from app.ssrf import (
+    DNSResolutionError,
+    SSRFBlockedError,
+    is_ip_blocked,
+    redact_url_credentials,
+)
 from app.status import classify_status_code
+from app.urls import safe_join_url
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +46,8 @@ class PingResultDTO:
         outcome: Tagged classification (UP, DEGRADED, DOWN, UNREACHABLE).
         status_code: HTTP response code if target responded, else None.
         latency_ms: Round-trip duration in milliseconds (monotonic).
-        error_detail: Concise, stable error identifier (e.g. 'connect_timeout', 'read_timeout', 'total_timeout', 'ssrf_blocked').
+        error_detail: Concise, stable error identifier
+            (e.g. 'connect_timeout', 'read_timeout', 'total_timeout', 'ssrf_blocked').
         original_url: Target URL provided for evaluation.
         final_url: Effective destination URL after following redirects.
     """
@@ -59,16 +69,6 @@ class PingResultDTO:
 # 3. SSRF Defense & Blocklists
 # =============================================================================
 
-from app.ssrf import (
-    BLOCKED_NETWORKS,
-    DNSResolutionError,
-    NAT64_WELL_KNOWN_PREFIX,
-    SSRFBlockedError,
-    is_ip_blocked,
-    redact_url_credentials,
-)
-from app.urls import safe_join_url
-
 
 def resolve_and_validate_target(
     url: str,
@@ -81,7 +81,8 @@ def resolve_and_validate_target(
     Args:
         url: The target URL to validate.
         allow_loopback: If True, permits loopback/private destinations (strictly for unit tests).
-        dns_resolver: Optional custom resolver for deterministic testing (defaults to socket.getaddrinfo).
+        dns_resolver: Optional custom resolver for deterministic testing
+            (defaults to socket.getaddrinfo).
 
     Returns:
         tuple of (parsed_url, list_of_resolved_ips)
@@ -126,11 +127,8 @@ def resolve_and_validate_target(
         pass  # Hostname is not an IP literal, proceed to DNS resolution
 
     # 4. Obvious loopback hostname check
-    if hostname_clean in ("localhost", "localhost.localdomain"):
-        if not allow_loopback:
-            raise SSRFBlockedError(
-                f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias."
-            )
+    if hostname_clean in ("localhost", "localhost.localdomain") and not allow_loopback:
+        raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
 
     # 5. Resolve hostname to all associated IPs
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
@@ -149,7 +147,7 @@ def resolve_and_validate_target(
     resolved_ips: list[str] = []
     for entry in addr_info:
         sockaddr = entry[4]
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         if ip_str not in resolved_ips:
             resolved_ips.append(ip_str)
 
@@ -171,10 +169,11 @@ def resolve_and_validate_target(
                         ip_str,
                     )
                     raise SSRFBlockedError(
-                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to private/restricted IP '{ip_str}'."
+                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to "
+                        f"private/restricted IP '{ip_str}'."
                     )
-        except ValueError:
-            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.")
+        except ValueError as err:
+            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.") from err
 
     return parsed, resolved_ips
 
@@ -225,11 +224,8 @@ async def async_resolve_and_validate_target(
         pass
 
     # 4. Obvious loopback hostname check
-    if hostname_clean in ("localhost", "localhost.localdomain"):
-        if not allow_loopback:
-            raise SSRFBlockedError(
-                f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias."
-            )
+    if hostname_clean in ("localhost", "localhost.localdomain") and not allow_loopback:
+        raise SSRFBlockedError(f"SSRF blocked: Hostname '{hostname_clean}' is a loopback alias.")
 
     # 5. Resolve hostname
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
@@ -255,7 +251,7 @@ async def async_resolve_and_validate_target(
     resolved_ips: list[str] = []
     for entry in addr_info:
         sockaddr = entry[4]
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         if ip_str not in resolved_ips:
             resolved_ips.append(ip_str)
 
@@ -277,10 +273,11 @@ async def async_resolve_and_validate_target(
                         ip_str,
                     )
                     raise SSRFBlockedError(
-                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to private/restricted IP '{ip_str}'."
+                        f"SSRF blocked: Hostname '{hostname_clean}' resolved to "
+                        f"private/restricted IP '{ip_str}'."
                     )
-        except ValueError:
-            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.")
+        except ValueError as err:
+            raise SSRFBlockedError(f"Invalid resolved IP format: '{ip_str}'.") from err
 
     return parsed, resolved_ips[0]
 
@@ -294,7 +291,7 @@ def is_tls_exception(exc: Exception) -> bool:
     """Detects whether an exception stems from a TLS/SSL handshake or certificate error."""
     curr: Exception | None = exc
     while curr is not None:
-        if isinstance(curr, (ssl.SSLError, ssl.CertificateError)):
+        if isinstance(curr, ssl.SSLError | ssl.CertificateError):
             return True
         exc_str = str(curr).lower()
         exc_name = type(curr).__name__.lower()
@@ -502,7 +499,8 @@ async def perform_http_probe(
                                 bytes_read += len(chunk)
                                 if bytes_read > max_bytes:
                                     logger.warning(
-                                        "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), terminating stream early",
+                                        "Response from '%s' exceeded MAX_RESPONSE_BYTES (%d), "
+                                        "terminating stream early",
                                         safe_url,
                                         max_bytes,
                                     )

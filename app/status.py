@@ -43,8 +43,9 @@ def classify_status_code(code: int) -> PingOutcome:
     | 400 - 499         | PingOutcome.DEGRADED | Client errors indicating degraded service.   |
     | 500 - 599         | PingOutcome.DOWN     | Server-side faults indicating target outage. |
 
-    Rationale: 1xx-3xx indicates reachable service responding normally, 4xx implies target reached
-    but returning client-level issues (degraded), while 5xx indicates internal server failure (down).
+    Rationale: 1xx-3xx indicates reachable service responding normally, 4xx implies target
+    reached but returning client-level issues (degraded), while 5xx indicates internal
+    server failure (down).
 
     Raises:
         ValueError: If code is not within the standard HTTP range [100, 599].

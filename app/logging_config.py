@@ -5,15 +5,13 @@ Provides JSON and standard logging formatters using standard-library modules onl
 with asynchronous request ID propagation via contextvars.
 """
 
-from contextlib import contextmanager
 import contextvars
-from datetime import datetime, timezone
 import json
 import logging
 import logging.config
 import re
-import sys
-from typing import Any, Generator
+from datetime import UTC, datetime
+from typing import Any
 
 # Asynchronous request context variable for log correlation
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -42,7 +40,7 @@ class JSONLogFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

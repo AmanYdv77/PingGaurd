@@ -3,21 +3,18 @@ Automated Test Suite for Network Resilience and SSRF Probing Engine.
 """
 
 import asyncio
+import contextlib
 import os
 import socket
 import ssl
 import time
-from unittest.mock import MagicMock, patch
-import httpx
+from unittest.mock import patch
 
+import httpx
 from app.enums import PingOutcome
 from app.net import (
-    DNSResolutionError,
-    PingResultDTO,
-    SSRFBlockedError,
     perform_http_probe,
     redact_url_credentials,
-    resolve_and_validate_target,
     robust_keep_alive,
     robust_ping,
 )
@@ -242,9 +239,10 @@ def test_tls_error_classification() -> None:
         raise connect_err
 
     transport = httpx.MockTransport(tls_fail_handler)
-    mock_resolver = lambda host, port, type=0: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
-    ]
+
+    def mock_resolver(host, port, type=0):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
     result = robust_ping(
         "https://expired-cert.example.com",
         allow_loopback=True,
@@ -315,6 +313,7 @@ def test_robust_keep_alive_success() -> None:
 def test_nat64_translation_validation() -> None:
     """Verify NAT64 IPv6 addresses (64:ff9b::/96) allow public IPv4 while blocking private IPv4."""
     import ipaddress
+
     from app.net import is_ip_blocked
 
     # 64:ff9b::d818:3910 embeds 216.24.57.16 (public Render IP) -> allowed
@@ -336,13 +335,15 @@ def test_slow_drip_total_timeout_enforced() -> None:
 
     async def _run_test():
         async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-            try:
+            with contextlib.suppress(Exception):
                 line = await reader.readline()
                 while line and line != b"\r\n":
                     line = await reader.readline()
 
                 writer.write(
-                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n"
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"Content-Type: text/plain\r\n\r\n"
                 )
                 await writer.drain()
 
@@ -353,14 +354,9 @@ def test_slow_drip_total_timeout_enforced() -> None:
 
                 writer.write(b"0\r\n\r\n")
                 await writer.drain()
-            except Exception:
-                pass
-            finally:
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+            with contextlib.suppress(Exception):
+                writer.close()
+                await writer.wait_closed()
 
         server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
         host, port = server.sockets[0].getsockname()
@@ -380,10 +376,8 @@ def test_slow_drip_total_timeout_enforced() -> None:
                 return res, elapsed
             finally:
                 server_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await server_task
-                except asyncio.CancelledError:
-                    pass
 
     res, elapsed = asyncio.run(_run_test())
     assert res.outcome == PingOutcome.UNREACHABLE
@@ -400,7 +394,7 @@ def test_latency_excludes_body_streaming_time() -> None:
 
     async def _run_test():
         async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-            try:
+            with contextlib.suppress(Exception):
                 await reader.read(1024)
                 headers = (
                     b"HTTP/1.1 200 OK\r\n"
@@ -414,14 +408,10 @@ def test_latency_excludes_body_streaming_time() -> None:
                 await asyncio.sleep(1.0)
                 writer.write(b"hello")
                 await writer.drain()
-            except Exception:
-                pass
-            finally:
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+
+            with contextlib.suppress(Exception):
+                writer.close()
+                await writer.wait_closed()
 
         server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
         host, port = server.sockets[0].getsockname()
@@ -441,10 +431,8 @@ def test_latency_excludes_body_streaming_time() -> None:
                 return res, elapsed
             finally:
                 server_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await server_task
-                except asyncio.CancelledError:
-                    pass
 
     res, elapsed = asyncio.run(_run_test())
     assert res.outcome == PingOutcome.UP
@@ -460,7 +448,7 @@ def test_latency_excludes_body_streaming_time() -> None:
 def test_dns_rebinding_pinned_ip_used() -> None:
     """
     Test (a) Rebinding: injected resolver returns public IP on call 1 and 127.0.0.1 on call 2.
-    Assert resolver called exactly once and outgoing request URL host equals the FIRST (validated) IP,
+    Assert resolver called once and outgoing URL host equals FIRST (validated) IP,
     with Host header equal to the original hostname.
     """
     call_count = 0
@@ -506,9 +494,9 @@ def test_redirect_to_blocked_ip_or_private_host_blocked() -> None:
         received_requests_1.append(request)
         return httpx.Response(302, headers={"Location": "http://127.0.0.1/admin"})
 
-    mock_pub_resolver = lambda h, p, t=0: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))
-    ]
+    def mock_pub_resolver(h, p, t=0):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+
     transport_1 = httpx.MockTransport(handler_literal)
     res_literal = robust_ping(
         "https://public-site.com/step1",
@@ -546,11 +534,12 @@ def test_redirect_to_blocked_ip_or_private_host_blocked() -> None:
 
 def test_redirect_relative_and_loop_exhaustion() -> None:
     """
-    Test (c): Relative Location redirects are followed correctly; redirect loops stop at max_redirects.
+    Test (c): Relative Location redirects are followed correctly;
+    redirect loops stop at max_redirects.
     """
-    mock_resolver = lambda h, p, t=0: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))
-    ]
+
+    def mock_resolver(h, p, t=0):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
 
     # Relative Location redirect followed correctly
     def relative_handler(request: httpx.Request) -> httpx.Response:
@@ -590,9 +579,10 @@ def test_https_request_carries_sni_hostname() -> None:
     """
     Test (d): https request carries extensions sni_hostname == original hostname.
     """
-    mock_resolver = lambda h, p, t=0: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))
-    ]
+
+    def mock_resolver(h, p, t=0):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+
     captured_req: httpx.Request | None = None
 
     def sni_handler(request: httpx.Request) -> httpx.Response:
@@ -617,9 +607,9 @@ def test_characterisation_httpx_exception_mapping() -> None:
     Characterisation tests pinning current behaviour for all handled httpx exceptions.
     Maps each exception raised by MockTransport to expected outcome and error_detail.
     """
-    mock_resolver = lambda h, p, t=0: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))
-    ]
+
+    def mock_resolver(h, p, t=0):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
 
     ssl_err = ssl.SSLCertVerificationError("cert expired")
     tls_connect_err = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] cert expired")

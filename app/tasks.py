@@ -8,25 +8,24 @@ Defines Celery background tasks:
 """
 
 import logging
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_sync_db
-
-from app.enums import MonitorMode, MonitorStatus, PingOutcome
+from app.enums import MonitorMode, PingOutcome
 from app.models import Monitor, PingResult
 from app.net import (
     PingResultDTO,
     robust_keep_alive,
     robust_ping,
 )
-from celery.exceptions import SoftTimeLimitExceeded
-from app.config import get_settings
 from app.status import outcome_to_status
-from app.urls import safe_join_url
 from app.worker import celery_app
 
 logger = logging.getLogger(__name__)
@@ -103,7 +102,7 @@ def _run_probe_task(
                 logger.error("%s failed monitor_id=%s reason=missing_url", display_name, monitor_id)
                 return {"status": "error", "reason": "missing_url", "monitor_id": monitor_id}
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             dto = probe(monitor)
 
@@ -133,11 +132,16 @@ def _run_probe_task(
 
             if dto.error_detail in TRANSIENT_ERRORS and task.request.retries < task.max_retries:
                 countdown = 2**task.request.retries
-                retry_log = (
-                    "Transient network error on monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)..."
-                    if check_type == "monitor"
-                    else "Transient network error in keep-alive for monitor_id=%s (%s). Retrying in %ss (attempt %s/%s)..."
-                )
+                if check_type == "monitor":
+                    retry_log = (
+                        "Transient network error on monitor_id=%s (%s). "
+                        "Retrying in %ss (attempt %s/%s)..."
+                    )
+                else:
+                    retry_log = (
+                        "Transient network error in keep-alive for monitor_id=%s (%s). "
+                        "Retrying in %ss (attempt %s/%s)..."
+                    )
                 logger.warning(
                     retry_log,
                     monitor_id,
@@ -161,7 +165,7 @@ def _run_probe_task(
 
     except SoftTimeLimitExceeded:
         logger.error("Soft time limit exceeded in %s for monitor_id=%s", task_label, monitor_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with get_sync_db() as recovery_session:
             mon = recovery_session.get(Monitor, monitor_id)
             if mon:
@@ -274,7 +278,7 @@ def sweep_due_monitors(
     settings = get_settings()
     b_size = batch_size if batch_size is not None else settings.sweep_batch_size
     m_batches = max_batches if max_batches is not None else settings.sweep_max_batches
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     logger.info(
         "Scheduler sweep started at %s (batch_size=%d, max_batches=%d)",
         now.isoformat(),
@@ -440,7 +444,7 @@ def prune_ping_results(batch_size: int | None = None) -> int:
 
     batch_limit = batch_size if batch_size is not None else settings.retention_batch_size
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     total_deleted = 0
 
     with get_sync_db() as session:
@@ -456,7 +460,9 @@ def prune_ping_results(batch_size: int | None = None) -> int:
             result = session.execute(stmt)
             session.commit()
 
-            deleted = result.rowcount
+            deleted = int(
+                result.rowcount  # type: ignore[attr-defined]  # CursorResult provides rowcount
+            )
             total_deleted += deleted
             if deleted == 0:
                 break

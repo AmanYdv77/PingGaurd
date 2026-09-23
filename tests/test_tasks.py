@@ -2,14 +2,15 @@
 Automated Test Suite for Worker Tasks and Network Probing Integration.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from app.db import get_sync_db
+from app.enums import MonitorStatus, PingOutcome
 from app.models import Monitor, PingResult
-from app.enums import MonitorMode, MonitorStatus, PingOutcome
 from app.net import PingResultDTO
-from app.tasks import execute_keep_alive, execute_ping, safe_join_url
+from app.tasks import execute_keep_alive, execute_ping
+from app.urls import safe_join_url
 from app.worker import celery_app
 
 
@@ -31,8 +32,8 @@ def _create_test_monitor(
             keep_alive_enabled=keep_alive_enabled,
             keep_alive_interval_seconds=300 if keep_alive_enabled else None,
             keep_alive_path=keep_alive_path,
-            next_check_at=datetime.now(timezone.utc),
-            next_keep_alive_at=datetime.now(timezone.utc) if keep_alive_enabled else None,
+            next_check_at=datetime.now(UTC),
+            next_keep_alive_at=datetime.now(UTC) if keep_alive_enabled else None,
         )
         session.add(monitor)
         session.flush()
@@ -53,7 +54,8 @@ def test_safe_join_url_variations() -> None:
 @patch("app.tasks.robust_ping")
 def test_execute_ping_success(mock_ping: MagicMock) -> None:
     """
-    Verify execute_ping performs probe via robust_ping, records PingResult with check_type='monitor',
+    Verify execute_ping performs probe via robust_ping,
+    records PingResult with check_type='monitor',
     updates monitor status to 'up', and records last_checked_at.
     """
     mock_ping.return_value = PingResultDTO(
@@ -131,7 +133,8 @@ def test_execute_ping_nonexistent_monitor() -> None:
 @patch("app.tasks.robust_keep_alive")
 def test_execute_keep_alive_success(mock_ka: MagicMock) -> None:
     """
-    Verify execute_keep_alive contacts `url + keep_alive_path`, writes PingResult(check_type='keep_alive'),
+    Verify execute_keep_alive contacts `url + keep_alive_path`,
+    writes PingResult(check_type='keep_alive'),
     and leaves Monitor.status untouched.
     """
     mock_ka.return_value = PingResultDTO(
@@ -330,7 +333,10 @@ def test_celery_delay_eager_execution(mock_ping: MagicMock, mock_ka: MagicMock) 
 
 @patch("app.tasks.robust_ping")
 def test_execute_ping_soft_time_limit_exceeded(mock_ping: MagicMock) -> None:
-    """Verify SoftTimeLimitExceeded writes PingResult(outcome=DOWN, error='task_soft_time_limit') and updates status='down'."""
+    """
+    Verify SoftTimeLimitExceeded writes PingResult(outcome=DOWN, error='task_soft_time_limit')
+    and updates status='down'.
+    """
     from celery.exceptions import SoftTimeLimitExceeded
 
     mock_ping.side_effect = SoftTimeLimitExceeded("Task soft time limit exceeded")

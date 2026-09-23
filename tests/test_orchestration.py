@@ -2,10 +2,9 @@
 Automated Behavioural Test Suite for Orchestration Contracts.
 
 Note: Static Dockerfile syntax and docker-compose.yml configurations are verified
-directly in CI via 'docker compose config -q' and 'docker build', rather than fragile string-matching tests.
+directly in CI via 'docker compose config -q' and 'docker build', rather than fragile
+string-matching tests.
 """
-
-import pytest
 
 
 def test_api_health_endpoint_contract(client) -> None:

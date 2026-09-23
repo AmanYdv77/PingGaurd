@@ -1,11 +1,13 @@
 """
 Database Configuration & Session Providers.
 
-Provides asynchronous engine/sessions for FastAPI and synchronous engine/sessions for Celery workers.
+Provides asynchronous engine/sessions for FastAPI and synchronous engine/sessions
+for Celery workers.
 """
 
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
-from typing import AsyncGenerator, Generator
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Session, sessionmaker
+
 from app.config import get_settings
 
 # Centralised application settings

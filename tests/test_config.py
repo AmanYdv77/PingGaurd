@@ -85,7 +85,7 @@ def test_database_url_required():
     from app.config import Settings
 
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, database_url=None)  # type: ignore[arg-type]
+        Settings(_env_file=None, database_url=None)  # type: ignore[arg-type]  # Deliberately invalid type to test validation
 
 
 def test_positive_timeout_validation():

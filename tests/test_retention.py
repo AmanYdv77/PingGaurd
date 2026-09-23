@@ -2,14 +2,13 @@
 Unit and integration tests for ping_results data retention and pruning.
 """
 
-from datetime import datetime, timedelta, timezone
-import pytest
-from celery.schedules import crontab
-from sqlalchemy import func, select
+from datetime import UTC, datetime, timedelta
 
 from app.db import get_sync_db
 from app.models import Monitor, PingResult
 from app.worker import celery_app
+from celery.schedules import crontab
+from sqlalchemy import func, select
 
 
 def seed_ping_result(session, monitor_id: int, checked_at: datetime) -> int:
@@ -61,7 +60,7 @@ def test_prune_ping_results_deletes_only_old_records():
 
         mid = seed_monitor(session)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_time = now - timedelta(days=35)
         new_time = now - timedelta(days=5)
 
@@ -79,7 +78,10 @@ def test_prune_ping_results_deletes_only_old_records():
 
 
 def test_prune_ping_results_batching_loop():
-    """Verify batching: with 5 old rows and batch size 2, all 5 rows are pruned across multiple batches."""
+    """
+    Verify batching: with 5 old rows and batch size 2,
+    all 5 rows are pruned across multiple batches.
+    """
     from app.tasks import prune_ping_results
 
     with get_sync_db() as session:
@@ -88,7 +90,7 @@ def test_prune_ping_results_batching_loop():
         session.commit()
 
         mid = seed_monitor(session)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_time = now - timedelta(days=40)
 
         for _ in range(5):

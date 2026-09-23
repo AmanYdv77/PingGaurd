@@ -4,7 +4,8 @@ SQLAlchemy 2.0 Typed ORM Models.
 Defines the relational schema for Monitor configurations and PingResult logs.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -108,7 +109,7 @@ class PingResult(Base):
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
     )

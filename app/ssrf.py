@@ -68,11 +68,7 @@ def is_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     ):
         return True
 
-    for blocked_net in BLOCKED_NETWORKS:
-        if ip in blocked_net:
-            return True
-
-    return False
+    return any(ip in blocked_net for blocked_net in BLOCKED_NETWORKS)
 
 
 def redact_url_credentials(url: str) -> str:

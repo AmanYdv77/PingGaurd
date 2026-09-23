@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
 import pytest
 
 APP_DIR = Path(__file__).resolve().parent.parent / "app"
@@ -34,7 +35,7 @@ def test_isolated_module_import_in_subprocess(module_name: str):
     Detects circular imports regardless of import order.
     """
     cmd = [sys.executable, "-c", f"import app.{module_name}"]
-    res = subprocess.run(
+    res = subprocess.run(  # noqa: S603  # test executes trusted local sys.executable subprocess
         cmd,
         capture_output=True,
         text=True,
@@ -55,9 +56,9 @@ def test_no_function_level_imports_in_app():
     for py_file in APP_DIR.glob("*.py"):
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 for subnode in ast.walk(node):
-                    if isinstance(subnode, (ast.Import, ast.ImportFrom)):
+                    if isinstance(subnode, ast.Import | ast.ImportFrom):
                         # Check if guarded by TYPE_CHECKING
                         function_imports.append(f"{py_file.name}:{subnode.lineno}")
 
@@ -75,7 +76,7 @@ def test_schemas_does_not_import_net():
             )
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                assert "app.net" not in alias.name, f"app.schemas must not import app.net"
+                assert "app.net" not in alias.name, "app.schemas must not import app.net"
 
 
 def test_urls_pure_module_exists():
