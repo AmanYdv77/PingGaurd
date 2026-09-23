@@ -57,7 +57,9 @@ def test_version_consistency() -> None:
     pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
     with open(pyproject_path, "rb") as f:
         data = tomllib.load(f)
-    declared_version = data["tool"]["poetry"]["version"]
+    declared_version = data.get("project", {}).get("version") or data.get("tool", {}).get(
+        "poetry", {}
+    ).get("version")
     assert app_module.__version__ == declared_version
     assert app_module.__version__ == "1.0.0"
 
