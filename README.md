@@ -361,6 +361,8 @@ Every push and pull request to `main` triggers `.github/workflows/ci.yml`:
 - **Database-driven sweeps (`FOR UPDATE SKIP LOCKED`)**: Rather than registering a separate Celery schedule for every individual monitor, Celery Beat runs a periodic sweep over PostgreSQL. Row-level locking (`FOR UPDATE SKIP LOCKED`) lets workers claim due monitors safely without duplicate checks.
 - **SSRF and DNS-rebinding protection**: Target hostnames are resolved and checked against private and loopback IP blocklists before connecting. Outbound probes pin the connection directly to the validated IP address, preventing attackers from switching IP addresses between check time and connection time.
 
+*For detailed architectural trade-offs, engineering rationale, and notes on how AI was used, see [DESIGN.md](DESIGN.md).*
+
 ---
 
 ## License
